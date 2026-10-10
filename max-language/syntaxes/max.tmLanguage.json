@@ -3,7 +3,13 @@
 
     "patterns": [
         {
+            "include": "#comments"
+        },
+        {
             "include": "#keywords"
+        },
+        {
+            "include": "#imports"
         },
         {
             "include": "#task-calls"
@@ -27,9 +33,6 @@
             "include": "#comparisons"
         },
         {
-            "include": "#comments"
-        },
-        {
             "include": "#arithmetic"
         },
         {
@@ -48,7 +51,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.max",
-                    "match": "\\b(if|then|elif|else|conclude|while|for|foreach|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield)\\b"
+                    "match": "\\b(if|then|elif|else|conclude|while|for|foreach|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield|using)\\b"
                 },
 
                 {
@@ -215,6 +218,22 @@
                         "0": { "name": "punctuation.definition.comment.line.max" }
                     },
                     "end": "$"
+                }
+            ]
+        },
+
+        "imports": {
+            "patterns": [
+                {
+                    "match": "\\b(using)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s*;?",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.import.max"
+                        },
+                        "2": {
+                            "name": "entity.name.namespace.max"
+                        }
+                    }
                 }
             ]
         }

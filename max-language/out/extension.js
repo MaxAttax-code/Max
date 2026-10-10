@@ -343,6 +343,7 @@ function activate(context) {
     }
     const staticModules = Object.keys(staticLibraries);
     const keywords = [
+        "using",
         "declare",
         "resort",
         "say",

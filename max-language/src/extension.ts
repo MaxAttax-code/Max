@@ -433,6 +433,8 @@ export function activate(context: vscode.ExtensionContext) {
     const staticModules = Object.keys(staticLibraries);
 
     const keywords = [
+        "using",
+
         "declare",
         "resort",
         "say",
