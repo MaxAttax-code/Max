@@ -39,7 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
                     fixes.push(this.createInsertPlaceholderInsideBlockFix(document, diag));
                 }
 
-                // Add more cases as you build more diagnostics
+                // Add more cases as we build more diagnostics
             }
 
             return fixes;
