@@ -84,23 +84,6 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.languages.registerCodeActionsProvider("max", new MaxCodeActionProvider(), {
         providedCodeActionKinds: MaxCodeActionProvider.providedCodeActionKinds
     });
-
-    /**
-     * Defines what kind of block type has begun
-     */
-    enum BlockType {
-        do,
-        then
-    }
-
-    /**
-     * An interface that determines where a block code in Max starts. Marked by 'then' or 'do'.
-     */
-    interface BlockEntry {
-        start: vscode.Position,
-        startOffset: number,
-        type: BlockType
-    }
     
     interface BlockComment {
         start: vscode.Position,
@@ -115,9 +98,9 @@ export function activate(context: vscode.ExtensionContext) {
     function runLint(document: vscode.TextDocument) {
 
 
-        // ---------------------------- \\
-        // ----- HELPER FUNCTIONS ----- \\
-        // ---------------------------- \\
+        // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
+        // |     HELPER FUNCTIONS     | \\
+        // |__________________________| \\
 
 
         /**
@@ -151,44 +134,74 @@ export function activate(context: vscode.ExtensionContext) {
             return isInsideBlockComment(offset, blocks) || isInsideLineComment(offset)
         }
 
-        function isNumeric(str: string): boolean {
-            return /^[0-9]+$/.test(str);
+        /**
+         * Checks if a given name is one of the types in the types list.
+         * @param name The name to check
+         * @returns True if the name is a type, else false
+         */
+        function isTypeName(name: string): boolean {
+            return types.includes(name);
         }
 
-        function isValidIdentifier(str: string): boolean {
-            return /^[A-Za-z_][A-Za-z0-9_]*$/.test(str);
+        /**
+         * Checks if a given name is one of the iterable types in the list.
+         * @param name The name to check
+         * @returns True if the name is an iterable type, else false
+         */
+        function isIterableTypeName(name: string): boolean {
+            return iterTypes.includes(name);
+        }
+
+        /**
+         * Function that helps parse typing, returning if it's valid or not.
+         * @param typeSpec The type name to check
+         * @returns A boolean if the type is valid or not
+         */
+        function parseType(typeSpec: string): boolean {
+            typeSpec = typeSpec.trim();
+
+            // A simple type
+            if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(typeSpec)) {
+                return isTypeName(typeSpec);
+            }
+
+            // The Long-form collection using 'of'
+            const longForm = /^([A-Za-z_][A-Za-z0-9_]*)\s+of\s+(.+)$/.exec(typeSpec);
+            if (longForm) {
+                const iterType = longForm[1];
+                const inner = longForm[2];
+
+                if (!isIterableTypeName(iterType)) return false;
+                return parseType(inner); // RECURSION. Super cool right?
+            }
+
+            // Short-form collection using the '<>' symbols
+            const shortForm = /^([A-Za-z_][A-Za-z0-9_]*)<(.+)>$/.exec(typeSpec);
+            if (shortForm) {
+                const iterType = shortForm[1];
+                const inner = shortForm[2];
+
+                if (!isIterableTypeName(iterType)) return false;
+                return parseType(inner);
+            }
+
+            // 4. Anything else is invalid!
+            return false;
         }
 
         
-        // ---------------------------- \\
-        // ---------------------------- \\
-        // ---------------------------- \\
+        // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
+        // |          SETUP           | \\
+        // |__________________________| \\
 
 
         const text = document.getText();
         const diags: vscode.Diagnostic[] = [];
 
-        // Regex to capture: declare <identifier>
-        const declareRegex = /\bdeclare\s+([A-Za-z_][A-Za-z0-9_]*)?/g;
-
-        // Regex to capture: define <taskType> <identifier>
-        const defineRegex = /\bdefine\s+([A-Za-z_][A-Za-z0-9_]*)?\s+([A-Za-z_][A-Z-a-z0-9_]*)?/g;
-
-        // Define when a block starts and ends
-        const blockStartRegex = /\b(do|then)\b/g;
-        const blockEndRegex = /\bconclude\b/g;
-
-        // Regex to capture: if/elif <condition> then
-        const ifStartRegex = /\bif\b([^]*)/g;
-        const elifRegex = /\belif\b([^]*)/g;
-
-        // Regex to capture: <loop_keyword> <condition> do
-        const loopStartRegex = /\b(while|for|foreach)\b([^]*)/g;
-
-        // Regex to capture: <identifier> = <number/identifier> to <number/identifier> [OPTIONAL>>], step <number/identifier>
-        // Yo that's REALLY long!
-        const forloopInitialiserRegex =
-            /\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]+)\s+to\s+([A-Za-z_][A-Za-z0-9_]+)(?:\s*,\s*step\s+([A-Za-z_][A-Za-z0-9_]+))?\s+do\b/g;
+        // Regex to capture: declare <identifier> (as <type>) = <value>(, resort <value2>)
+        // BUT! In order to prevent Regex hell, we simply capture all until a newline
+        // Syntaxing is handled later
+        const declareRegex = /\bdeclare\b([^\n]*)/g;
 
         // Regex to capture: // <comment>
         const lineCommentRegex = /\/\/.*$/gm;
@@ -197,13 +210,17 @@ export function activate(context: vscode.ExtensionContext) {
 
         // Defines when a block comment starts and ends
         // They need no word boundaries ('\b') since they are not characters (which would be '\w' or '\W')
-        const blockCommentStartRegex = /\/\/\//g;
-        const blockCommentEndRegex = /\\\\\\/g;
+        const blockCommentStartRegex = /\/\/\//g;  // ///
+        const blockCommentEndRegex = /\\\\\\/g;  // \\\
 
-        const blockStack: BlockEntry[] = [];
         const blockCommentStack: BlockComment[] = [];
 
         let match;
+
+
+        // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
+        // |    COMMENT DETECTION     | \\
+        // |__________________________| \\
 
         /*
         NOTE: Comments logic MUST be placed above all else, so that they are detected and found first, 
@@ -257,406 +274,136 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }
 
-        while ((match = declareRegex.exec(text)) !== null) {
-            // The full match
+
+        // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
+        // |      SYNTAX CHECKING     | \\
+        // |__________________________| \\
+
+
+        // ---------------------------- \\
+        // ----- DECLARATION LAWS ----- \\
+        // ---------------------------- \\
+
+
+        while((match = declareRegex.exec(text)) !== null) {
             const fullMatch = match[0];
-            // The identifier to be found
-            const identifier = match[1];
+            const remainder = match[1].trim();
+
             const startPos = document.positionAt(match.index);
             const endPos = document.positionAt(match.index + fullMatch.length);
 
             if (insideAnyComment(match.index, blockCommentStack)) continue;
 
-            // If there is no identifier name, uh oh!
-            if (!identifier) {
-                // Inside a comment? SKIP!
+            // Now we split the comma if it exists
+            const parts = remainder.split(/\s*,\s*resort/);
+
+            const mainPart = parts[0]; // Our declaration and value
+            const resortPart = parts[1]; // Our resortable, or undefined
+
+            // Let's take this in steps!
+
+            // ----------------------------
+            // 1. Parse resort value
+            // ----------------------------
+
+            let resortValue: string | null = null;
+
+            if (resortPart !== undefined) {
+                // Get if the resort match is valid
+                const resortMatch = /^\s+(.+)$/.exec(resortPart);
+                if (!resortMatch) {
+                    diags.push(new vscode.Diagnostic(
+                        new vscode.Range(startPos, endPos),
+                        "Invalid resort clause. Expected: resort <value>",
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                    continue;
+                }
+                resortValue = resortMatch[1];
+            }
+
+            // ----------------------------
+            // 2. Parse main declaration
+            // ----------------------------
+
+            // Find the name and value, with typing in the hue!
+
+            // name [as type] = value
+            const mainMatch =  /^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+(.+?))?\s*=\s*(.+)$/.exec(mainPart);
+            if (!mainMatch) {
                 diags.push(new vscode.Diagnostic(
                     new vscode.Range(startPos, endPos),
-                    "Expected a variable name after 'declare'.",
+                    "Invalid declaration statement",
                     vscode.DiagnosticSeverity.Error
                 ));
                 continue;
             }
 
-            // We can not allow keywords either!
+            const identifier = mainMatch[1];
+            const typeSpect = mainMatch[2]; // May be undefined!
+            const value = mainMatch[3];
+
+            // ----------------------------
+            // 3. Validate identifier
+            // ----------------------------
+
+            // No special stuff in there
             if (keywords.includes(identifier) || taskTypes.includes(identifier)) {
-                // Yeah you're gonna see this everywhere
-
                 diags.push(new vscode.Diagnostic(
                     new vscode.Range(startPos, endPos),
-                    `Cannot use keyword '${identifier}' as a variable name.`,
-                    vscode.DiagnosticSeverity.Error
-                ));
-            }
-        }
-        
-        while ((match = defineRegex.exec(text)) !== null) {
-            const fullMatch = match[0];
-            const taskType = match[1];
-            const identifier = match[2];
-            const startPos = document.positionAt(match.index);
-            const endPos = document.positionAt(match.index + fullMatch.length);
-        
-            if (insideAnyComment(match.index, blockCommentStack)) continue;
-
-            if (!taskType) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    "Expected a task type after 'define'.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-            
-            if (!taskTypes.includes(taskType)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    "Expected a valid task type for a task definition.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-            
-            if (!identifier) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    "Expected a task name for a task definition.",
+                    `Invalid declaration name, cannot use ${identifier}`,
                     vscode.DiagnosticSeverity.Error
                 ));
                 continue;
             }
 
-            if (keywords.includes(identifier) || taskTypes.includes(identifier)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    `Cannot use keyword '${identifier}' as a task name.`,
-                    vscode.DiagnosticSeverity.Error
-                ));
-            }
-        }
+            // ----------------------------
+            // 4. Parse type specification
+            // ----------------------------
 
-        // When a block starts
-        while ((match = blockStartRegex.exec(text)) !== null) {
-            let typeOf: BlockType;
-            switch (text) {
-                case "then": typeOf = BlockType.then; break;
-                case "do": typeOf = BlockType.do; break;
-                default: throw new Error(`Invalid block started found: ${text}`);
-            }
-
-            const startPos = document.positionAt(match.index);
-            blockStack.push({
-                start: startPos,
-                startOffset: match.index + match[0].length, // This finds the offset to reach the position AFTER the keyword!
-                type: typeOf
-            });
-        }
-
-        // Find where the block ends
-        while ((match = blockEndRegex.exec(text)) !== null) {
-            const endPos = document.positionAt(match.index);
-
-            if (blockStack.length === 0) {
-                if (insideAnyComment(match.index, blockCommentStack)) continue;
-                // No block to close!
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(endPos, endPos.translate(0, match[0].length)),
-                    "Unexpected 'conclude' — no matching 'do' or 'then' block.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-
-            // Correct match — pop it, Candy Crush Style
-            const block = blockStack.pop();
-            if (block === undefined) { throw new Error("Block attempted to be recieved from stack did not exist."); }
-            const startOffset = block.startOffset; const endOffset = match.index;
-            
-            // Extract the block's content (excluding the keywords!)
-            const blockContent = text.substring(startOffset, endOffset);
-
-            // Check if blockContent is only whitespace/newlines
-            if (/^\s*$/.test(blockContent)) {
-                if (insideAnyComment(match.index, blockCommentStack)) continue;
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(document.positionAt(startOffset), endPos),
-                    "Empty block detected — contains only whitespace or newlines.",
-                    vscode.DiagnosticSeverity.Warning
-                ));
-            }
-        }
-
-        // When an if statement starts
-        while ((match = ifStartRegex.exec(text)) !== null) {
-            const fullMatch = match[0];
-            const startPos = document.positionAt(match.index);
-            const endPos = document.positionAt(match.index + fullMatch.length);
-
-            if (insideAnyComment(match.index, blockCommentStack)) continue;
-            
-            if (!fullMatch.includes("then")) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    "If statement must have keyword 'then' following it's condition.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-            }
-
-            // If there is no condition after 'if'
-            if (/^\bif\b\s*$/.test(fullMatch)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    "Expected a condition after 'if'.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-
-            // 'then' exists, but no condition is put
-            if (/^\bif\s+then\b/.test(fullMatch)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    "Expected a condition before 'then'.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-        }
-
-        // An elif branch
-        while ((match = elifRegex.exec(text)) !== null) {
-            const fullMatch = match[0];
-            const startPos = document.positionAt(match.index);
-            const endPos = document.positionAt(match.index + fullMatch.length);
-
-            if (insideAnyComment(match.index, blockCommentStack)) continue;
-
-            // Any thens found? Fill it up!
-            if (blockStack[-1].type == BlockType.then) {
-                blockStack.pop();
-            }
-
-            // No 'then' to follow ever found?
-            if (blockStack.length === 0 || !blockStack.some((entry) => entry.type == BlockType.then)) {
-                if (insideAnyComment(match.index, blockCommentStack)) continue;
-                // No block to close!
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(endPos, endPos.translate(0, match[0].length)),
-                    "Unexpected 'elif' — no following 'then' block.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-
-            if (!fullMatch.includes("then")) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    "Elif branch must have keyword 'then' following it's condition.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-            }
-
-            // If there is no condition after 'if'
-            if (/^\belif\b\s*$/.test(fullMatch)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    "Expected a condition after 'elif'.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-
-            // 'then' exists, but no condition is put
-            if (/^\belif\s+then\b/.test(fullMatch)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    "Expected a condition before 'then'.",
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-        }
-
-        // When loop statement begins
-        while ((match = loopStartRegex.exec(text)) !== null) {
-            const fullMatch = match[0];
-            // How convenient!
-            const loopKeyword = match[1];
-
-            const startPos = document.positionAt(match.index);
-            const endPos = document.positionAt(match.index + fullMatch.length);
-
-            if (insideAnyComment(match.index, blockCommentStack)) continue;
-
-             // Missing "do"
-            if (!fullMatch.includes("do")) {
-                let msg = "";
-
-                switch (loopKeyword) {
-                    case "while":
-                        msg = "A 'while' loop must end with 'do' to begin its block.";
-                        break;
-                    case "for":
-                        msg = "A 'for' loop must end with 'do' after its initialisation.";
-                        break;
-                    case "foreach":
-                        msg = "A 'foreach' loop must end with 'do' after specifying the iteration target.";
-                        break;
-                }
-
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    msg,
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-
-            // Missing condition/initialiser
-            if (/^\b(while|for|foreach)\b\s*$/.test(fullMatch)) {
-                let msg = "";
-
-                switch (loopKeyword) {
-                    case "while":
-                        msg = "Expected a condition after 'while'.";
-                        break;
-                    case "for":
-                        msg = "Expected an initialisation after 'for'.";
-                        break;
-                    case "foreach":
-                        msg = "Expected an iteration target after 'foreach'.";
-                        break;
-                }
-
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    msg,
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-
-            // "do" exists but no condition/initialiser
-            if (/^\b(while|for|foreach)\s+do\b/.test(fullMatch)) {
-                let msg = "";
-
-                switch (loopKeyword) {
-                    case "while":
-                        msg = "Expected a condition before 'do' in a 'while' loop.";
-                        break;
-                    case "for":
-                        msg = "Expected an initialisation before 'do' in a 'for' loop.";
-                        break;
-                    case "foreach":
-                        msg = "Expected an iteration target before 'do' in a 'foreach' loop.";
-                        break;
-                }
-
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    msg,
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-        }
-
-        // Detect a for loop initialisation
-        while ((match = forloopInitialiserRegex.exec(text)) !== null) {
-            const loopVar = match[1];
-            const startVal = match[2];
-            const endVal = match[3];
-            const stepVal = match[4];
-
-            const startPos = document.positionAt(match.index);
-            const endPos = document.positionAt(match.index + match[0].length);
-
-            if (insideAnyComment(match.index, blockCommentStack)) continue;
-
-            // Detect malformed identifiers. No, not malinformed!
-            if (!isValidIdentifier(loopVar)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    `Invalid loop variable '${loopVar}'.`,
-                    vscode.DiagnosticSeverity.Error
-                ));
-            }
-
-            // Detect malformed start value
-            if (!isValidIdentifier(startVal) && !isNumeric(startVal)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    `Invalid start value '${startVal}' in 'for' loop.`,
-                    vscode.DiagnosticSeverity.Error
-                ));
-            }
-
-            // Detect malformed end value
-            if (!isValidIdentifier(endVal) && !isNumeric(endVal)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    `Invalid end value '${endVal}' in 'for' loop.`,
-                    vscode.DiagnosticSeverity.Error
-                ));
-            }
-
-            // If we are given number start/end/step values, we can also highlight that!
-            if (isNumeric(startVal) && isNumeric(endVal) && isNumeric(stepVal)) {
-                let startNum = parseInt(startVal);
-                let endNum = parseInt(endVal);
-                let stepNum = parseInt(stepVal);
-
-                if (startNum > endNum && stepNum > 0) {
+            if (typeSpect !== undefined) {
+                // Check out `parseType` for more
+                if (!parseType(typeSpect)) {
                     diags.push(new vscode.Diagnostic(
                         new vscode.Range(startPos, endPos),
-                        "The start value is higher than the end value, whilst the step value is positive.",
-                        vscode.DiagnosticSeverity.Warning
-                    ))
-                }
-
-                if (startNum < endNum && stepNum < 0) {
-                    diags.push(new vscode.Diagnostic(
-                        new vscode.Range(startPos, endPos),
-                        "The start value is lower than the end value, whilst the step value is negative.",
-                        vscode.DiagnosticSeverity.Warning
-                    ))
-                }
-
-                if (stepNum == 0) {
-                    diags.push(new vscode.Diagnostic(
-                        new vscode.Range(startPos, endPos),
-                        "This will infinitely loop without a break statement.",
-                        vscode.DiagnosticSeverity.Warning
-                    ))
+                        `Invalid type specification '${typeSpect}'.`,
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                    continue;
                 }
             }
 
-            // Detect malformed step value. Detect malformed everything at this rate!
-            if (stepVal && !isValidIdentifier(stepVal) && !isNumeric(stepVal)) {
+            // ----------------------------
+            // 5. Validate value
+            // ----------------------------
+
+            if (value.length === 0) {
                 diags.push(new vscode.Diagnostic(
                     new vscode.Range(startPos, endPos),
-                    `Invalid step value '${stepVal}' in 'for' loop.`,
+                    `Expected a value after '='`,
                     vscode.DiagnosticSeverity.Error
                 ));
+                continue;
+            }
+
+            // ----------------------------
+            // 6. Validate resort value
+            // ----------------------------
+
+            if (resortValue !== null && resortValue.length === 0) {
+                diags.push(new vscode.Diagnostic(
+                    new vscode.Range(startPos, endPos),
+                    `Expected a value after 'resort'`,
+                    vscode.DiagnosticSeverity.Error
+                ));
+                continue;
             }
         }
 
-        // Checks through the stack, telling us which blocks are missing an end ('conclude')
-        for (const unclosed of blockStack) {
-            diags.push(new vscode.Diagnostic(
-                new vscode.Range(unclosed.start, unclosed.start),
-                "Missing 'conclude' for this block.",
-                vscode.DiagnosticSeverity.Error
-            ));
-        }
 
-        for (const unclosedComment of blockCommentStack) {
-            diags.push(new vscode.Diagnostic(
-                new vscode.Range(unclosedComment.start, unclosedComment.start),
-                "Missing block comment ending.",
-                vscode.DiagnosticSeverity.Error
-            ))
-        }
+        // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
+        // |    FINAL CONSISTENCY     | \\
+        // |__________________________| \\
 
         diagnostics.set(document.uri, diags);
     }
@@ -729,6 +476,11 @@ export function activate(context: vscode.ExtensionContext) {
         "float",
         "string",
         "boolean",
+        "list",
+        "dictionary"
+    ]
+
+    const iterTypes = [
         "list",
         "dictionary"
     ]
