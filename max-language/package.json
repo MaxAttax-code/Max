@@ -1,0 +1,52 @@
+{
+    "name": "max-language",
+    "displayName": "Max language",
+    "description": "Syntax highlighting for the Max programming language",
+    "version": "0.0.1",
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onLanguage:max"
+    ],
+    "engines": {
+        "vscode": "^1.105.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "max",
+                "aliases": [
+                    "Max",
+                    "max"
+                ],
+                "extensions": [
+                    ".max",
+                    ".mx"
+                ],
+                "icon": {
+                    "light": "./icons/max-file.png",
+                    "dark": "./icons/max-file-darkmode.png"
+                }
+            }
+        ],
+        "grammars": [
+            {
+                "language": "max",
+                "scopeName": "source.max",
+                "path": "./syntaxes/max.tmLanguage.json"
+            }
+        ],
+        "snippets": [
+            {
+                "language": "max",
+                "path": "./snippets/max.json"
+            }
+        ]
+    },
+    "devDependencies": {
+        "@types/node": "^26.6.2",
+        "@types/vscode": "^1.0.0"
+    }
+}

@@ -1,0 +1,222 @@
+{
+    "scopeName": "source.max",
+
+    "patterns": [
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#task-calls"
+        },
+        {
+            "include": "#properties"
+        },
+        {
+            "include": "#types"
+        },
+        {
+            "include": "#booleans"
+        },
+        {
+            "include": "#numbers"
+        },
+        {
+            "include": "#strings"
+        },
+        {
+            "include": "#comparisons"
+        },
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#arithmetic"
+        },
+        {
+            "include": "#parentheses"
+        },
+        {
+            "include": "#brackets"
+        },
+        {
+            "include": "#identifiers"
+        }
+    ],
+
+    "repository": {
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.max",
+                    "match": "\\b(if|then|elif|else|conclude|while|for|foreach|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield)\\b"
+                },
+
+                {
+                    "match": "\\b(declare)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.declaration.max"
+                        },
+                        "2": {
+                            "name": "variable.other.max"
+                        }
+                    }
+                },
+
+                {
+                    "match": "\\b(define)\\s+(function|coroutine)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": {
+                            "name": "meta.definition.max"
+                        },
+                        "2": {
+                            "name": "meta.definition.type.max"
+                        },
+                        "3": {
+                            "name": "meta.function.max"
+                        }
+                    }
+                }
+            ]
+        },
+
+        "task-calls": {
+            "patterns": [
+                {
+                    "comment": "Matches standalone and member task calls too, e.g. foo() or obj.bar()",
+                    "match": "(?:(\\b[a-zA-Z_][a-zA-Z0-9_]*)\\s*\\.)?\\s*(\\b[a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+                    "captures": {
+                        "1": {
+                            "name": "variable.other.object.max"
+                        },
+                        "2": {
+                            "name": "entity.name.function.max"
+                        }
+                    }
+                }
+            ]
+        },
+
+        "properties": {
+            "patterns": [
+                {
+                    "comment": "Matches member-accessed properties (e.g., obj.length), excluding method calls which have a parenthesis following them. You can see at the end it ensures the property is not followed by parenthesis in order to accept it",
+                    "match": "(?:(\\b[a-zA-Z_][a-zA-Z0-9_]*)\\s*\\.)\\s*(\\b[a-zA-Z_][a-zA-Z0-9_]*)\\b(?!\\s*\\()",
+                    "captures": {
+                        "1": {
+                            "name": "variable.other.object.max"
+                        },
+                        "2": {
+                            "name": "entity.name.property.max"
+                        }
+                    }
+                }
+            ]
+        },
+
+        "types": {
+            "patterns": [
+                {
+                    "name": "storage.type.max",
+                    "match": "\\b(int|float|string|boolean|list|dictionary)\\b"
+                }
+            ]
+        },
+
+        "booleans": {
+            "patterns": [
+                {
+                    "name": "constant.language.max",
+                    "match": "\\b(true|false|possible)\\b"
+                }
+            ]
+        },
+
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.max",
+                    "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+                }
+            ]
+        },
+
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.max",
+                    "match": "\"([^\"\\\\]|\\\\.)*\""
+                }
+            ]
+        },
+
+        "comparisons": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.comparison.max",
+                    "match": "==|<=|>=|<|>|!="
+                }
+            ]
+        },
+
+        "arithmetic": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.arithmetic.max",
+                    "match": "\\+=|-=|\\*=|/=|[+*/-]|\\=>"
+                }
+            ]
+        },
+
+        "parentheses": {
+            "patterns": [
+                {
+                    "name": "punctuation.parenthesis.max",
+                    "match": "[()]"
+                }
+            ]
+        },
+
+        "lists": {
+            "patterns": [
+                {
+                    "name": "punctuation.brackets.max",
+                    "match": "[\\[\\]]"
+                }
+            ]
+        },
+
+        "identifiers": {
+            "patterns": [
+                {
+                    "name": "variable.other.max",
+                    "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+                }
+            ]
+        },
+
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.block.max",
+                    "begin": "///",
+                    "beginCaptures": {
+                        "0": { "name": "punctuation.definition.comment.begin.max" }
+                    },
+                    "end": "\\\\\\\\\\\\",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.definition.comment.end.max" }
+                    }
+                },
+                {
+                    "name": "comment.line.max",
+                    "begin": "//",
+                    "beginCaptures": {
+                        "0": { "name": "punctuation.definition.comment.line.max" }
+                    },
+                    "end": "$"
+                }
+            ]
+        }
+    }
+}

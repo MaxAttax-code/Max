@@ -1,0 +1,163 @@
+{
+  "math": [
+    {
+      "label": "sqrt(number)",
+      "detail": "Returns the square root of a float/number"
+    },
+    {
+      "label": "cbrt(number)",
+      "detail": "Returns the cubic root of a float/number"
+    },
+    {
+      "label": "root(base, exp)",
+      "detail": "Returns the exponent root of the base"
+    },
+    {
+      "label": "log(base, exp)",
+      "detail": "Returns the logarithm of the base to the result"
+    },
+    {
+      "label": "loge(number)",
+      "detail": "Returns the natural logarithm of the number"
+    },
+    {
+      "label": "log10(number)",
+      "detail": "Returns the base-10 logarithm of the number"
+    },
+    {
+      "label": "reciprocal(number)",
+      "detail": "Gives 1 divided by the number"
+    },
+    {
+        "label": "cos(angle)",
+        "detail": "Gives the cosine value of an angle"
+    },
+    {
+        "label": "sin(angle)",
+        "detail": "Gives the sine value of an angle"
+    },
+    {
+        "label": "tan(angle)",
+        "detail": "Gives the tangent value of an angle"
+    },
+    {
+        "label": "sec(angle)",
+        "detail": "Gives for an angle 1 / cosine(angle)"
+    },
+    {
+        "label": "cosec(angle)",
+        "detail": "Gives for an angle 1 / sine(angle)"
+    },
+    {
+        "label": "cotan(angle)",
+        "detail": "Gives for an angle 1 / tan(angle)"
+    },
+    {
+        "label": "iCos(number)",
+        "detail": "Gives the inverse cosine value of a number between -1 and 1"
+    },
+    {
+        "label": "iSin(number)",
+        "detail": "Gives the inverse sin value of a number between -1 and 1"
+    },
+    {
+        "label": "iTan(number)",
+        "detail": "Gives the inverse tan value of a number"
+    },
+    {
+        "label": "iSec(number)",
+        "detail": "Gives the inverse sec value of a number out of the range between -1 and 1"
+    },
+    {
+        "label": "iCosec(number)",
+        "detail": "Gives the inverse cosec value of a number out of the range between -1 and 1"
+    },
+    {
+        "label": "iCotan(number)",
+        "detail": "Gives the inverse cotan value of a number"
+    },
+    {
+        "label": "cosh(angle)",
+        "detail": "Gives the hyperbolic cos value of an angle"
+    },
+    {
+        "label": "sinh(angle)",
+        "detail": "Gives the hyperbolic sin value of an angle"
+    },
+    {
+        "label": "tanh(angle)",
+        "detail": "Gives the hyperbolic tan value of an angle"
+    },
+    {
+        "label": "iCosh(number)",
+        "detail": "Gives the inverse cosh value of a number above or equal to 1"
+    },
+    {
+        "label": "iSinh(number)",
+        "detail": "Gives the inverse sinh value of a number"
+    },
+    {
+        "label": "iTanh(number)",
+        "detail": "Gives the inverse tanh value of a number between -1 and 1"
+    },
+    {
+      "label": "abs(number)",
+      "detail": "Returns the absolute value"
+    },
+    {
+      "label": "round(number)",
+      "detail": "Returns the closest integer to the number given. When given half (X.5), this rounds away from X"
+    },
+    {
+      "label": "floor(number)",
+      "detail": "Returns the smallest integer less than or equal to the number"
+    },
+    {
+      "label": "ceil(number)",
+      "detail": "Returns the smallest integer more than or equal to the number"
+    },
+
+    {
+      "label": "PI",
+      "detail": "Constant value of pi",
+      "kind": 20
+    },
+    {
+      "label": "eul",
+      "detail": "Constant value of Euler's number",
+      "kind": 20
+    },
+    {
+      "label": "rt1",
+      "detail": "Constant value of sqrt of 2",
+      "kind": 20
+    },
+    {
+      "label": "phi",
+      "detail": "Constant value of phi, the golden ratio",
+      "kind": 20
+    },
+    {
+      "label": "c",
+      "detail": "Constant value of the speed of light",
+      "kind": 20
+    }
+  ],
+
+  "iterables": [
+    {
+        "label": "countChars(str)",
+        "detail": "Returns a dictionary of characters and the number of appearances in the string"
+    },
+    {
+        "label": "countExistingChars(str)",
+        "detail": "Returns a dictionary of characters that appeared in the string and the number of appearances in the string"
+    },
+    
+    {
+      "label": "alphabet",
+      "detail": "A list of the lowercase alphabet. In order of a-z",
+      "kind": 20
+    }
+  ]
+}
