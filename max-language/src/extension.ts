@@ -9,7 +9,7 @@ export function activate(context: vscode.ExtensionContext) {
     /**
      * A class that implements the vscode CodeActionProvider interface.
      * It enables quick fixing, refactoring and source actions.
-     * This class should be 
+     * This class should be created and registered into VS codes CodeActionProvider
      */
     class MaxCodeActionProvider implements vscode.CodeActionProvider {
         public static readonly providedCodeActionKinds = [
@@ -294,7 +294,7 @@ export function activate(context: vscode.ExtensionContext) {
 
             if (insideAnyComment(match.index, blockCommentStack)) continue;
 
-            // Now we split the comma if it exists
+            // Now we split the comma and resort if it exists
             const parts = remainder.split(/\s*,\s*resort/);
 
             const mainPart = parts[0]; // Our declaration and value

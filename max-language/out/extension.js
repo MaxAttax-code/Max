@@ -43,7 +43,7 @@ function activate(context) {
     /**
      * A class that implements the vscode CodeActionProvider interface.
      * It enables quick fixing, refactoring and source actions.
-     * This class should be
+     * This class should be created and registered into VS codes CodeActionProvider
      */
     class MaxCodeActionProvider {
         provideCodeActions(document, _range, context) {
@@ -253,7 +253,7 @@ function activate(context) {
             const endPos = document.positionAt(match.index + fullMatch.length);
             if (insideAnyComment(match.index, blockCommentStack))
                 continue;
-            // Now we split the comma if it exists
+            // Now we split the comma and resort if it exists
             const parts = remainder.split(/\s*,\s*resort/);
             const mainPart = parts[0]; // Our declaration and value
             const resortPart = parts[1]; // Our resortable, or undefined
