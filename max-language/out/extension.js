@@ -40,6 +40,57 @@ const path = __importStar(require("path"));
 function activate(context) {
     // Create a diagnostics bucket. This is for error linting
     const diagnostics = vscode.languages.createDiagnosticCollection("max");
+    // Provides us the hover-info we want
+    const hoverProvider = vscode.languages.registerHoverProvider("max", {
+        provideHover(document, position, _token) {
+            const range = document.getWordRangeAtPosition(position);
+            if (!range)
+                return;
+            const word = document.getText(range);
+            const text = document.getText();
+            // 1. Check if the word is preceded by a member access dot, that way we know it's incorrect to provide basic hover for
+            const line = document.lineAt(position.line).text;
+            const textBeforeWord = line.substring(0, range.start.character);
+            if (/\.\s*$/.test(textBeforeWord)) {
+                return null; // Suppress hover for member properties/methods
+            }
+            // 2. Check if the word is a declared variable (new RegExp so we can include the word within)
+            const declRegex = new RegExp(`\\bdeclare\\s+${word}\\b(?:\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*))?`, 'g');
+            const declMatch = declRegex.exec(text);
+            if (declMatch) {
+                const varType = declMatch[1] ? declMatch[1] : "inferred/dynamic";
+                // The message is written in Markdown!
+                return new vscode.Hover(`**Variable**: \`${word}\`\n\n**Type**: \`${varType}\``);
+            }
+            // 3. Check if the word is a user-defined function or coroutine
+            const defRegex = new RegExp(`\\bdefine\\s+(function|coroutine)\\s+${word}\\b`, 'g');
+            const defMatch = defRegex.exec(text);
+            if (defMatch) {
+                const taskKind = defMatch[1];
+                return new vscode.Hover(`**User-Defined ${taskKind}**: \`${word}\``);
+            }
+            // 4. Check if the word is a keyword
+            if (keywords.includes(word)) {
+                return new vscode.Hover(`**Keyword**: \`${word}\`\n\n*Max language control or declaration keyword.*`);
+            }
+            // 5. Check if the word is a built-in type
+            if (types.includes(word)) {
+                return new vscode.Hover(`**Type Definition**: \`${word}\``);
+            }
+            // 6. Check if the word is a built-in taskType
+            if (taskTypes.includes(word)) {
+                return new vscode.Hover(`**Task Type Definition**: \`${word}\``);
+            }
+            let globalTaskNames = Object.keys(globalTasks);
+            // 7. Check if the word is a global task, thus displaying it's name and description
+            if (globalTaskNames.includes(word)) {
+                return new vscode.Hover(`Global task **${word}()**\n\n${globalTasks[word]}`);
+            }
+            return null; // No hover info found for this word
+        }
+    });
+    // Don't forget to push it to subscriptions so it cleans up properly
+    context.subscriptions.push(hoverProvider);
     /**
      * A class that implements the vscode CodeActionProvider interface.
      * It enables quick fixing, refactoring and source actions.
@@ -96,6 +147,11 @@ function activate(context) {
     vscode.languages.registerCodeActionsProvider("max", new MaxCodeActionProvider(), {
         providedCodeActionKinds: MaxCodeActionProvider.providedCodeActionKinds
     });
+    let TaskType;
+    (function (TaskType) {
+        TaskType[TaskType["function"] = 0] = "function";
+        TaskType[TaskType["coroutine"] = 1] = "coroutine";
+    })(TaskType || (TaskType = {}));
     /**
      * This function gives us the error linting needed for Max.
      * @param document The text document to inspect
@@ -180,6 +236,48 @@ function activate(context) {
             // 4. Anything else is invalid!
             return false;
         }
+        /**
+         * Parses Task parameters, also validating their typing and format. This means the 'with ()'
+         * @param paramText The param text to parse. Must not be '=>'
+         * @param paramsStartPos The position the parameters start from
+         * @returns The parameters parsed as an array of TaskParams
+         */
+        function parseTaskParameters(paramText, paramsStartPos) {
+            const startPos = document.positionAt(paramsStartPos);
+            const endPos = document.positionAt(paramsStartPos + paramText.length);
+            // First we extract content inside parentheses
+            const innerMatch = paramText.match(/\(([^)]*)\)/);
+            if (!innerMatch)
+                return [];
+            const innerContent = innerMatch[1].trim();
+            if (!innerContent)
+                return []; // Empty parameters: with ()
+            // Split 'em by comma to evaluate each parameter individually
+            const rawParams = innerContent.split(',');
+            const parameters = [];
+            // Through each param found
+            for (const rawParam of rawParams) {
+                const trimmed = rawParam.trim();
+                if (!trimmed)
+                    continue;
+                // A flexible regex: requires name, 'as', and a type name optionally
+                const paramMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+                if (!paramMatch) {
+                    // Report syntax error for malformed parameter structure
+                    diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), // adjust position as needed
+                    `Invalid parameter syntax: "${trimmed}". Expected format: 'name' or 'name as type'`, vscode.DiagnosticSeverity.Error));
+                    continue;
+                }
+                const paramName = paramMatch[1];
+                const typeName = paramMatch[2] || null; // Will be null if omitted
+                // Finally, validate the type
+                if (typeName !== null && !types.includes(typeName)) {
+                    diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Unknown type "${typeName}" for parameter "${paramName}"`, vscode.DiagnosticSeverity.Error));
+                }
+                parameters.push({ name: paramName, type: typeName });
+            }
+            return parameters;
+        }
         // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
         // |          SETUP           | \\
         // |__________________________| \\
@@ -189,6 +287,8 @@ function activate(context) {
         // BUT! In order to prevent Regex hell, we simply capture all until a newline
         // Syntaxing is handled later
         const declareRegex = /\bdeclare\b([^\n]*)/g;
+        // Regex to capture: define <tasktype> <name> [with (params as types...) | =>] [return type] do
+        const defineRegex = /\bdefine\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:(with\s*\([^)]*\))|(=>))(?:\s+return\s+([A-Za-z_][A-Za-z0-9_]*))?\s+\bdo\b/;
         // Regex to capture: // <comment>
         const lineCommentRegex = /\/\/.*$/gm;
         // Creating an interface? Nah, just a list of line comments that are found
@@ -317,6 +417,58 @@ function activate(context) {
                 continue;
             }
         }
+        // ---------------------------- \\
+        // ------ DEFINITION LAWS ----- \\
+        // ---------------------------- \\
+        while ((match = defineRegex.exec(text)) !== null) {
+            const fullMatch = match[0];
+            const taskTypeName = match[1];
+            const withClause = match[3]; // e.g. "with (x as int, y as int)" or undefined
+            const arrowClause = match[4]; // e.g. "=>" or undefined
+            const returnType = match[5]; // e.g. "return int" or undefined
+            const startPos = document.positionAt(match.index);
+            const endPos = document.positionAt(match.length + fullMatch.length);
+            // ----------------------------
+            // 1. Validate the Task Type
+            // ----------------------------
+            let taskType;
+            switch (taskTypeName) {
+                case "function":
+                    taskType = TaskType.function;
+                    break;
+                case "coroutine":
+                    taskType = TaskType.coroutine;
+                    break;
+                default: {
+                    diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Invalid Task Type given: ${taskTypeName}`, vscode.DiagnosticSeverity.Error));
+                    continue;
+                }
+            }
+            const clauses = `${withClause === undefined}:${arrowClause === undefined}`;
+            switch (clauses) {
+                // There is an arrow clause? Just break, there's no params!
+                case "true:false": {
+                    break;
+                }
+                // There is a with clause, so check params
+                case "false:true": {
+                    // Very nice positioning
+                    const withClauseIndex = match.index + match[0].indexOf(withClause);
+                    let params = parseTaskParameters(withClause, withClauseIndex);
+                    break;
+                }
+                default: {
+                    diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Invalid Task Definition structure. Must have parameters or be parameterless.`, vscode.DiagnosticSeverity.Error));
+                    continue;
+                }
+            }
+            if (returnType !== undefined) {
+                if (!isTypeName(returnType)) {
+                    diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Invalid return type for task definition.`, vscode.DiagnosticSeverity.Error));
+                    continue;
+                }
+            }
+        }
         // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
         // |    FINAL CONSISTENCY     | \\
         // |__________________________| \\
@@ -392,12 +544,18 @@ function activate(context) {
         "function",
         "coroutine"
     ];
-    const globalTasks = [
-        "input",
-        "when",
-        "freeze",
-        "error"
-    ];
+    const globalTasks = {
+        "input": `Accepts an input from the user using stdin.
+                  This only accepts valid UTF-8 characters, and whitespaces at the beginning and end are trimmed.
+                  An optional string output message can be given, which will be printed before accepting an input.`,
+        "when": `Intakes a possible and a lambda condition, applying the condition to the possible.
+                 Should the lambda condition ever change, the possible value will be reevaluated.
+                 To stop condition-evaluation for the given possible, use freeze().\n
+                 Using multiple when() on a possible performs boolean comparisons between the boolean.\n`,
+        "freeze": `Freezes a possible so long as it has a condition attached and has been resolved.
+                   Attempting to freeze a possible that has not been evaluated will error.`,
+        "error": `Calls an error on the machine, printing out a message if given, and exitting the terminal.`
+    };
     const functionRegex = /define\s+function\s+([A-Za-z_][A-Za-z0-9_]*)\s+with\s*\(([^)]*)\)/g;
     const coroutineRegex = /define\s+coroutine\s+([A-Za-z_][A-Za-z0-9_]*)\s+=>\s/g;
     // Function to parse the params of a task, returning it as a dictionary
@@ -430,6 +588,9 @@ function activate(context) {
     }
     const provider = vscode.languages.registerCompletionItemProvider({ language: "max" }, {
         provideCompletionItems(document, position) {
+            // Some pre-written stuff...
+            let globalTaskNames = Object.keys(globalTasks);
+            // --- \\
             const line = document.lineAt(position).text;
             const textBeforeCursor = line.substring(0, position.character);
             const text = document.getText();
@@ -510,7 +671,7 @@ function activate(context) {
                 ...operators.map(o => new vscode.CompletionItem(o, vscode.CompletionItemKind.Operator)),
                 ...types.map(t => new vscode.CompletionItem(t, vscode.CompletionItemKind.TypeParameter)),
                 ...taskTypes.map(tt => new vscode.CompletionItem(tt, vscode.CompletionItemKind.Class)),
-                ...globalTasks.map(gt => new vscode.CompletionItem(gt, vscode.CompletionItemKind.Function)),
+                ...globalTaskNames.map(gt => new vscode.CompletionItem(gt, vscode.CompletionItemKind.Function)),
                 ...staticModules.map(m => new vscode.CompletionItem(m, vscode.CompletionItemKind.Module)),
                 ...completions
             ];
