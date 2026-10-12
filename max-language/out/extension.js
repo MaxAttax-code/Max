@@ -101,41 +101,18 @@ function activate(context) {
             const fixes = [];
             for (const diag of context.diagnostics) {
                 const msg = diag.message;
-                if (msg.includes("Expected a variable name after 'declare'")) {
-                    fixes.push(this.createInsertPlaceholderVarFix(document, diag));
-                }
-                if (msg.includes("Unexpected 'conclude'")) {
-                    fixes.push(this.createRemoveConcludeFix(document, diag));
-                }
-                if (msg.includes("Empty block detected")) {
-                    fixes.push(this.createInsertPlaceholderInsideBlockFix(document, diag));
+                if (msg.includes("Expected a value after '='")) {
+                    fixes.push(this.createPlaceholderValueFix(document, diag));
                 }
                 // Add more cases as we build more diagnostics
             }
             return fixes;
         }
-        createInsertPlaceholderVarFix(document, diag) {
-            const fix = new vscode.CodeAction("Insert placeholder variable", vscode.CodeActionKind.QuickFix);
+        createPlaceholderValueFix(document, diag) {
+            const fix = new vscode.CodeAction("Insert placeholder nil", vscode.CodeActionKind.QuickFix);
             fix.edit = new vscode.WorkspaceEdit();
-            const insertPos = diag.range.end;
-            fix.edit.insert(document.uri, insertPos, " placeholder");
-            fix.diagnostics = [diag];
-            return fix;
-        }
-        createRemoveConcludeFix(document, diag) {
-            const fix = new vscode.CodeAction("Remove 'conclude'", vscode.CodeActionKind.QuickFix);
-            fix.edit = new vscode.WorkspaceEdit();
-            // This time, we REMOVING the range!
-            fix.edit.delete(document.uri, diag.range);
-            fix.diagnostics = [diag];
-            return fix;
-        }
-        createInsertPlaceholderInsideBlockFix(document, diag) {
-            const fix = new vscode.CodeAction("Insert empty say statement inside block", vscode.CodeActionKind.QuickFix);
-            fix.edit = new vscode.WorkspaceEdit();
-            // Insert into it the empty say statement on the next line!
-            const insertPos = diag.range.start.translate(1, 0);
-            fix.edit.insert(document.uri, insertPos, "say \"\"");
+            const range = diag.range;
+            fix.edit.replace(document.uri, range, "nil");
             fix.diagnostics = [diag];
             return fix;
         }
@@ -288,16 +265,21 @@ function activate(context) {
         // Syntaxing is handled later
         const declareRegex = /\bdeclare\b([^\n]*)/g;
         // Regex to capture: define <tasktype> <name> [with (params as types...) | =>] [return type] do
-        const defineRegex = /\bdefine\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:(with\s*\([^)]*\))|(=>))(?:\s+return\s+([A-Za-z_][A-Za-z0-9_]*))?\s+\bdo\b/;
+        const defineRegex = /\bdefine\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:(with\s*\([^)]*\))|(=>))(?:\s+return\s+([A-Za-z_][A-Za-z0-9_]*))?\s+\bdo\b/g;
+        // Regex for a block start and end
+        const blockRegex = /\b(then|do|conclude)\b/g;
         // Regex to capture: // <comment>
         const lineCommentRegex = /\/\/.*$/gm;
         // Creating an interface? Nah, just a list of line comments that are found
         const lineComments = [];
-        // Defines when a block comment starts and ends
+        // Defines when a block comment starts and ends, as /// and \\\
         // They need no word boundaries ('\b') since they are not characters (which would be '\w' or '\W')
         const blockCommentStartRegex = /\/\/\//g; // ///
         const blockCommentEndRegex = /\\\\\\/g; // \\\
         const blockCommentStack = [];
+        // Start with a stack of only one scope. This single scope should never be popped
+        const scopeStack = [{ vars: [], startRange: new vscode.Range(document.positionAt(0), document.positionAt(text.length)) }];
+        const taskStack = [];
         let match;
         // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
         // |    COMMENT DETECTION     | \\
@@ -392,6 +374,19 @@ function activate(context) {
                 diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Invalid declaration name, cannot use ${identifier}`, vscode.DiagnosticSeverity.Error));
                 continue;
             }
+            // Duplicate declaration found?
+            let isDuplicate = false;
+            for (let i = scopeStack.length - 1; i >= 0; i--) {
+                const scope = scopeStack[i];
+                if (scope.vars.some(v => v.name === identifier)) {
+                    isDuplicate = true;
+                    break;
+                }
+            }
+            if (isDuplicate) {
+                diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Duplicate declaration name found: '${identifier}' already exists in this scope or an outer scope.`, vscode.DiagnosticSeverity.Error));
+                continue;
+            }
             // ----------------------------
             // 4. Parse type specification
             // ----------------------------
@@ -416,6 +411,12 @@ function activate(context) {
                 diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Expected a value after 'resort'`, vscode.DiagnosticSeverity.Error));
                 continue;
             }
+            // Push this onto the last scope we have
+            scopeStack[scopeStack.length - 1].vars.push({
+                name: identifier,
+                type: typeSpect,
+                value: value
+            });
         }
         // ---------------------------- \\
         // ------ DEFINITION LAWS ----- \\
@@ -423,13 +424,21 @@ function activate(context) {
         while ((match = defineRegex.exec(text)) !== null) {
             const fullMatch = match[0];
             const taskTypeName = match[1];
+            const identifier = match[2];
             const withClause = match[3]; // e.g. "with (x as int, y as int)" or undefined
             const arrowClause = match[4]; // e.g. "=>" or undefined
             const returnType = match[5]; // e.g. "return int" or undefined
             const startPos = document.positionAt(match.index);
             const endPos = document.positionAt(match.length + fullMatch.length);
             // ----------------------------
-            // 1. Validate the Task Type
+            // 1. Validate the Identifier
+            // ----------------------------
+            if (keywords.includes(identifier) || taskTypes.includes(identifier)) {
+                diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Invalid task definition name, cannot use ${identifier}`, vscode.DiagnosticSeverity.Error));
+                continue;
+            }
+            // ----------------------------
+            // 2. Validate the Task Type
             // ----------------------------
             let taskType;
             switch (taskTypeName) {
@@ -445,16 +454,21 @@ function activate(context) {
                 }
             }
             const clauses = `${withClause === undefined}:${arrowClause === undefined}`;
+            let params = [];
             switch (clauses) {
                 // There is an arrow clause? Just break, there's no params!
                 case "true:false": {
+                    if (taskType == TaskType.coroutine) {
+                        diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Invalid Task Definition structure. A Coroutine cannot have any parameters.`, vscode.DiagnosticSeverity.Error));
+                        continue;
+                    }
                     break;
                 }
                 // There is a with clause, so check params
                 case "false:true": {
                     // Very nice positioning
                     const withClauseIndex = match.index + match[0].indexOf(withClause);
-                    let params = parseTaskParameters(withClause, withClauseIndex);
+                    params = parseTaskParameters(withClause, withClauseIndex);
                     break;
                 }
                 default: {
@@ -468,10 +482,46 @@ function activate(context) {
                     continue;
                 }
             }
+            taskStack.push({
+                name: identifier,
+                type: taskType,
+                parameters: params
+            });
+        }
+        // ---------------------------- \\
+        // ----- BLOCK REGEX LAWS ----- \\
+        // ---------------------------- \\
+        while ((match = blockRegex.exec(text)) !== null) {
+            const keyword = match[0];
+            const startPos = document.positionAt(match.index);
+            const endPos = document.positionAt(match.index + keyword.length);
+            if (keyword === "then" || keyword === "do") {
+                // Start a new scope
+                scopeStack.push({
+                    startRange: new vscode.Range(startPos, endPos),
+                    vars: []
+                });
+            }
+            else if (keyword === "conclude") {
+                // End the current scope
+                scopeStack.pop();
+            }
         }
         // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
         // |    FINAL CONSISTENCY     | \\
         // |__________________________| \\
+        // If more than the global scope is left (or somehow the global scope was popped)
+        if (scopeStack.length < 1) {
+            diags.push(new vscode.Diagnostic(new vscode.Range(document.positionAt(0), document.positionAt(text.length)), "Cannot attempt to exit out of the global scope", vscode.DiagnosticSeverity.Error));
+        }
+        else if (scopeStack.length !== 1) {
+            for (let unclosed of scopeStack) {
+                if (scopeStack.indexOf(unclosed) === 0) {
+                    continue; // Ignore the global scope
+                }
+                diags.push(new vscode.Diagnostic(unclosed.startRange, "Unclosed scope found. Close with 'conclude'.", vscode.DiagnosticSeverity.Error));
+            }
+        }
         diagnostics.set(document.uri, diags);
     }
     // Now we activate it for workspace changes
