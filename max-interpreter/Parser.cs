@@ -1,8 +1,5 @@
 using System.Globalization;
 
-// Under license to the reader by the author of the Max Language®
-// Relaying these files and/or distributing or publishing them without the author's consent may incur a fine
-
 namespace Max;
 
 public class Parser(List<Token> tokens)
