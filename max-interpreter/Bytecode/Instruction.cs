@@ -16,7 +16,7 @@ namespace Max
     /// <param name="Name">The name of the variable</param>
     /// <param name="Type">The variable type, may be null</param>
     /// <param name="ResortValue">The resort value of the variable, if needed</param>
-    public record StoreOperand(string Name, Bytecode.TypeRepresentation? Type, object? ResortValue);
+    public record StoreOperand(string Name, HashSet<string> modifiers, Bytecode.TypeRepresentation? Type, object? ResortValue);
 
     /// <summary>
     /// A record of operations and their names

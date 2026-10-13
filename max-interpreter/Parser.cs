@@ -119,7 +119,7 @@ public class Parser(List<Token> tokens)
     /// </summary>
     /// <param name="type">The Tokentype to inspect</param>
     /// <returns></returns>
-    private bool IsContextualKeyword(TokenType type)
+    private static bool IsContextualKeyword(TokenType type)
     {
         return type switch
         {
@@ -596,15 +596,53 @@ public class Parser(List<Token> tokens)
         // Skip past 'declare'
         Advance();
 
-        // The variable name
-        Token token = CurrentToken()!;
+        // Get the modifier, or just the variable name
+        Token token = Consume();
+
+        ModifierSet modifiers = new();
+
+        // For each modifier found
+        while (Match(token, TokenType.Modifier))
+        {
+            string modifierName = CurrentToken()!.Value;
+
+            switch (modifierName)
+            {
+                case "fixed":
+                {
+                    if (modifiers.MutabilityModifier != null)
+                        throw new MaxVariableException("Cannot have more than one mutability modifier on a variable declaration.");
+
+                    modifiers.MutabilityModifier = MutabilityModifier.Fixed;
+                    break;
+                }
+
+                case "open":
+                {
+                    if (modifiers.LifecycleModifier != null)
+                        throw new MaxVariableException("Cannot have more than one lifecycle modifier on a variable declaration.");
+
+                    modifiers.LifecycleModifier = LifecycleModifier.Open;
+                    break;
+                }
+
+                case "static":
+                {
+                    if (modifiers.LifecycleModifier != null)
+                        throw new MaxVariableException("Cannot have more than one lifecycle modifier on a variable declaration.");
+
+                    modifiers.LifecycleModifier = LifecycleModifier.Static;
+                    break;
+                }
+            }
+
+            token = Consume();
+        }
 
         if (!Match(token, TokenType.Identifier))
         {
             throw new MaxVariableException("Expected a variable name after 'declare'");
         }
-
-        Advance();
 
         MaxType? type = null;
 
@@ -650,7 +688,7 @@ public class Parser(List<Token> tokens)
 
         if (CurrentToken() == null)
         {
-            return new DeclarationStatement(token.Value, type, expression, resortable);
+            return new DeclarationStatement(token.Value, modifiers, type, expression, resortable);
         }
 
         Token comma = CurrentToken()!;
@@ -675,7 +713,7 @@ public class Parser(List<Token> tokens)
             }
         }
         
-        return new DeclarationStatement(token.Value, type, expression, resortable!);
+        return new DeclarationStatement(token.Value, modifiers, type, expression, resortable!);
     }
 
     /// <summary>
@@ -1402,6 +1440,7 @@ public class Parser(List<Token> tokens)
         // Create a declaration from the components
         DeclarationStatement declaration = new(
             declarable.Value,
+            new ModifierSet(),
             null,
             expressable,
             null

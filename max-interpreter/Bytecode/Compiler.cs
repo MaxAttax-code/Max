@@ -539,6 +539,8 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         // Compile value
         CompileExpression(statement.Value);
 
+        HashSet<string> modifierSet = statement.Modifiers.ToHashSet(); // We would rather have a hashset for JSON to serialize!
+
         // Convert into a representation
         Bytecode.TypeRepresentation? typeRepresentative = Bytecode.ToTypeRepresentation(statement.Type);
 
@@ -549,7 +551,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
         // And compile name too as storage
         bytecode.Instructions.Add(new Instruction(OpCode.Store, new StoreOperand(
-            statement.Name, typeRepresentative, resortValueRaw
+            statement.Name, modifierSet, typeRepresentative, resortValueRaw
         )));
     }
 
@@ -884,7 +886,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         foreach (string name in statement.Declarations)
         {
             CompileConstant(new Nil());
-            bytecode.Instructions.Add(new Instruction(OpCode.Store, new StoreOperand(name, null, null)));
+            bytecode.Instructions.Add(new Instruction(OpCode.Store, new StoreOperand(name, [], null, null)));
         }
         
         // Now we allocate ONE temporary slot to track the loop index position.
@@ -1048,13 +1050,13 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
                 /*
                     Store in a variable the coroutine instance
                     REMEMBER!!!!
-                    We storing it a variable because it is a coroutine object, so it can be member accessed to be called!
+                    We are storing it as a variable because it is a coroutine object, so it can be member accessed to be called!
                 */
 
                 // Oh ye and do this as well
                 Bytecode.TypeRepresentation? coTypeRepresentation = Bytecode.ToTypeRepresentation(new CoroutineType());
 
-                bytecode.Instructions.Add(new Instruction(OpCode.Store, new StoreOperand(task.Name, coTypeRepresentation, null)));
+                bytecode.Instructions.Add(new Instruction(OpCode.Store, new StoreOperand(task.Name, [], coTypeRepresentation, null)));
 
                 break;
             }

@@ -61,9 +61,10 @@ namespace Max
         public List<IStatement> Consequences { get; } = consequences;
     }
 
-    public class DeclarationStatement(string name, MaxType? type, IExpression value, IExpression? resortable) : IStatement
+    public class DeclarationStatement(string name, ModifierSet modifiers, MaxType? type, IExpression value, IExpression? resortable) : IStatement
     {
         public string Name { get; } = name;
+        public ModifierSet Modifiers { get; } = modifiers;
         public MaxType? Type { get; } = type;
         public IExpression Value { get;} = value;
         public IExpression? Resortable { get; } = resortable;

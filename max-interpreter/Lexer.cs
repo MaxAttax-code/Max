@@ -309,9 +309,9 @@ namespace Max
                 "resort" => new Token(TokenType.Resort, word),
                 "say" => new Token(TokenType.Say, word),
                 "define" => new Token(TokenType.Define, word),
-
-                "function" => new Token(TokenType.TaskType, word),
-                "coroutine" => new Token(TokenType.TaskType, word),
+                
+                "function" or "coroutine" => new Token(TokenType.TaskType, word),
+                "static" or "open" or "fixed" => new Token(TokenType.Modifier, word),
 
                 "true" => new Token(TokenType.Boolean, word),
                 "false" => new Token(TokenType.Boolean, word),

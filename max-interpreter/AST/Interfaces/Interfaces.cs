@@ -39,6 +39,7 @@ namespace Max
         Define,
 
         TaskType,
+        Modifier,
 
         IfBegin,
         Then,
