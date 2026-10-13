@@ -22,7 +22,7 @@ namespace Max
         /// <returns></returns>
         public HashSet<string> ToHashSet()
         {
-            var set = new HashSet<string>();
+            HashSet<string> set = [];
 
             if (LifecycleModifier != null)
                 set.Add(LifecycleModifier.ToString()!.ToLower());

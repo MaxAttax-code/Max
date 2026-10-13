@@ -37,10 +37,20 @@ namespace Max
         }
     }
 
-    public class Variable(string name, object value, MaxType? type, object? resortValue)
+    /// <summary>
+    /// A class that represemts a variable and all the elements it can hold.
+    /// This is it's 'VariableEntry' correspondent within the Rust Bytecode.
+    /// </summary>
+    /// <param name="name">The variable name</param>
+    /// <param name="value">The value assigned</param>
+    /// <param name="modifiers">The declaration modifiers on this variable when declared. May be an empty set.</param>
+    /// <param name="type">The type given, if so</param>
+    /// <param name="resortValue">The resort value assigned, if so</param>
+    public class Variable(string name, object value, ModifierSet modifiers, MaxType? type, object? resortValue)
     {
         public string Name { get; } = name;
         public object Value { get; private set; } = value;
+        public ModifierSet Modifiers { get; } = modifiers;
         public MaxType? Type { get; } = type;
         public object? ResortValue { get; private set; } = resortValue;
 
@@ -60,6 +70,12 @@ namespace Max
             // Only able to resort value once (when null)
             ResortValue ??= resortValue;
         }
+    }
+
+    public class GlobalVariableInfo(MaxType? type, ModifierSet modifierSet)
+    {
+        public MaxType? Type { get; private set; } = type;
+        public ModifierSet Modifiers { get; } = modifierSet;
     }
 
     /// <summary>

@@ -601,7 +601,7 @@ public class Parser(List<Token> tokens)
         // For each modifier found
         while (Match(token, TokenType.Modifier))
         {
-            string modifierName = CurrentToken()!.Value;
+            string modifierName = token.Value;
 
             switch (modifierName)
             {

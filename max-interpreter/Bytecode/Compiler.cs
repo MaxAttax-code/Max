@@ -23,9 +23,10 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
     private int nextLambdaID;
 
     /// <summary>
-    /// Names declared in the global compiler scope
+    /// Names declared in the compiler scopes.
+    /// Kept as a stack of scopes, so each scope is assigned their own variables.
     /// </summary>
-    private readonly Dictionary<string, MaxType?> globalVariableNames = [];
+    private readonly List<Dictionary<string, GlobalVariableInfo?>> variableScopes = [[]];
 
     /// <summary>
     /// Compiles all the nodes in a given list
@@ -320,7 +321,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
     {
         // If we are calling a native module, simply call straight to it
         if (expression.Target is VariableReference targetVar 
-            && !globalVariableNames.ContainsKey(targetVar.Name) 
+            && !IsVariableDeclared(targetVar.Name) 
             && nativeRegistry.IsStaticModule(targetVar.Name))
         {
             // Emit CallNative directly targeting the static module
@@ -334,7 +335,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
         // Are we accessing an import? Allow nested member access
         if (expression.Target is VariableReference importedVar
-            && !globalVariableNames.ContainsKey(importedVar.Name)
+            && !IsVariableDeclared(importedVar.Name)
             && symbolsTable.TryGetValue(importedVar.Name, out SymbolTable? table))
         {
             if (table.Contents.TryGetValue(expression.Member, out _))
@@ -382,15 +383,18 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         };
 
         // For each variable found, input into the lambda
-        foreach ((string name, MaxType? type) in globalVariableNames)
-        {
-            lambdaCompiler.globalVariableNames[name] = type;
+        foreach (var dict in variableScopes) {
+            foreach ((string name, GlobalVariableInfo? type) in dict)
+            {
+                // In the first (global) level
+                lambdaCompiler.variableScopes[0][name] = type;
+            }
         }
 
         // We do this for the params too!
         foreach (string parameter in expression.Parameters)
         {
-            lambdaCompiler.globalVariableNames[parameter] = null;
+            lambdaCompiler.variableScopes[0][parameter] = null;
         }
 
         Bytecode.BytecodeChunk chunk = new();
@@ -533,7 +537,13 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
                 );
             }
             
-            globalVariableNames.Add(statement.Name, statement.Type);
+            // Use indexer assignment instead of .Add() so it can safely overwrite 
+            // We do this is the LAST scope found! Where the declaration sits
+            // Of course, assuming the 'open' modifier was added...
+            variableScopes[^1][statement.Name] = new GlobalVariableInfo(
+                statement.Type,
+                statement.Modifiers
+            );
         }
 
         // Compile value
@@ -630,6 +640,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
             // Enters the scope when evaluating
             bytecode.Instructions.Add(new Instruction(OpCode.EnterScope));
+            EnterCompilerScope();
 
             // Compile the basic consequences
             foreach (IStatement consequence in branch.Consequences)
@@ -639,6 +650,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
             // Exits afterwards. This process is repeated for the other parts
             bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+            ExitCompilerScope();
 
             // Add the new Jump for the first consequence
             endJumps.Add(EmitJump(OpCode.Jump));
@@ -648,6 +660,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         }
 
         bytecode.Instructions.Add(new Instruction(OpCode.EnterScope));
+        EnterCompilerScope();
 
         // Now for the Else
         foreach (IStatement consequence in statement.Else)
@@ -656,12 +669,14 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         }
 
         bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+        ExitCompilerScope();
 
         // Get the maybe block
         int maybeJump = EmitJump(OpCode.Jump);
         int maybeStart = bytecode.Instructions.Count;
 
         bytecode.Instructions.Add(new Instruction(OpCode.EnterScope));
+        EnterCompilerScope();
 
         foreach (IStatement consequence in statement.Maybe)
         {
@@ -669,6 +684,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         }
 
         bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+        ExitCompilerScope();
 
         // End of the maybe block after compiling all above
         int end = bytecode.Instructions.Count;
@@ -729,6 +745,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
         // Scopes apply in while as well
         bytecode.Instructions.Add(new Instruction(OpCode.EnterScope));
+        EnterCompilerScope();
 
         foreach (IStatement line in statement.Consequences)
         {
@@ -736,6 +753,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         }
 
         bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+        ExitCompilerScope();
 
         // When true, just jump to the start again
         int jumpBack = EmitJump(OpCode.Jump);
@@ -760,6 +778,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
         // Enter scope. This applies to the temporary variable declared inside the for loop too!
         bytecode.Instructions.Add(new Instruction(OpCode.EnterScope));
+        EnterCompilerScope();
 
         // Compile the declared variable
         CompileDeclaration(declaration);
@@ -778,6 +797,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         int zeroStepScopeExit = bytecode.Instructions.Count;
         // Exit scope when having to err
         bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+        ExitCompilerScope();
         bytecode.Instructions.Add(new Instruction(OpCode.Throw,
             new MaxLogicException("A for loops step amount cannot be 0")
         ));
@@ -811,6 +831,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
         // Compile the body
         bytecode.Instructions.Add(new Instruction(OpCode.EnterScope));
+        EnterCompilerScope();
 
         foreach (IStatement line in statement.Consequences)
         {
@@ -818,6 +839,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         }
 
         bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+        ExitCompilerScope();
 
         // Adds the declared variable with the step amount
         CompileExpression(new VariableReference(declaration.Name));
@@ -833,6 +855,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
         // Exit scope
         bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+        ExitCompilerScope();
 
         // All these lead to exitting the body when needed
         PatchJump(positiveExit, exit);
@@ -881,6 +904,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
         // Enter scope for the loop variables
         bytecode.Instructions.Add(new Instruction(OpCode.EnterScope));
+        EnterCompilerScope();
 
         // Pre-declare all loop variables in the new scope initialized to Nil at first
         foreach (string name in statement.Declarations)
@@ -927,6 +951,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         // Finally, we exit scope and patch the exit jump destination
         int exit = bytecode.Instructions.Count;
         bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+        ExitCompilerScope();
         PatchJump(exitJump, exit);
 
         // Reset!
@@ -954,6 +979,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
                 // Enter scope
                 bytecode.Instructions.Add(new Instruction(OpCode.EnterScope));
+                EnterCompilerScope();
 
                 // A jump for when to execute the body
                 int entryPoint = bytecode.Instructions.Count;
@@ -969,7 +995,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
                     // Track parameter types in the compiler so member accesses inside the body know their types!
                     foreach (Parameter param in task.Parameters)
                     {
-                        globalVariableNames[param.Name] = param.Type;
+                        variableScopes[^1][param.Name] = new(param.Type, new ModifierSet());
                     }
 
                     // Safe compiling
@@ -983,7 +1009,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
                     // Clean up parameters after compiling the body so they don't 'leak' 🤔 outside the task
                     foreach (Parameter param in task.Parameters)
                     {
-                        globalVariableNames.Remove(param.Name);
+                        variableScopes[^1].Remove(param.Name);
                     }
 
                     // Task depth is lowered at the end always
@@ -994,6 +1020,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
                 bytecode.Instructions.Add(new Instruction(OpCode.Return));
 
                 bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+                ExitCompilerScope();
 
                 // Now patch the jump for when to skip
                 PatchJump(skipBody, bytecode.Instructions.Count);
@@ -1012,6 +1039,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
                 int skipBody = EmitJump(OpCode.Jump);
 
                 bytecode.Instructions.Add(new Instruction(OpCode.EnterScope));
+                EnterCompilerScope();
                 
                 int entryPoint = bytecode.Instructions.Count;
 
@@ -1035,6 +1063,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
                 }
 
                 bytecode.Instructions.Add(new Instruction(OpCode.ExitScope));
+                ExitCompilerScope();
 
                 // We add this to allow the coroutine to return nil
                 CompileConstant(new Nil());
@@ -1078,7 +1107,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
             {
                 string targetName = targetVar.Name;
                 // Incase there is a variable of the same name!
-                bool isShadowed = globalVariableNames.ContainsKey(targetName);
+                bool isShadowed = IsVariableDeclared(targetName);
 
                 // When plausible, check if the name is a static module
                 if (!isShadowed && nativeRegistry.IsStaticModule(targetName)) {
@@ -1259,10 +1288,23 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
     {
         if (bytecode.Tasks.ContainsKey(name) ||
             bytecode.Coroutines.ContainsKey(name) ||
-            globalVariableNames.TryGetValue(name, out _) ||
             nativeRegistry.TryGetTask(null, name, out _))
         {
             return true;
+        }
+
+        for (int i = variableScopes.Count - 1; i >= 0; i--)
+        {
+            if (variableScopes[i].TryGetValue(name, out GlobalVariableInfo? info))
+            {
+                // If found in an outer scope, check if it has 'open'
+                if (info?.Modifiers.LifecycleModifier != LifecycleModifier.Open)
+                {
+                    return true; // Conflict! It's not open for shadowing.
+                }
+                // If it is open, allow shadowing by continuing search or letting it declare
+                break; 
+            }
         }
 
         return false;
@@ -1325,6 +1367,40 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
             NilLiteral => "nil",
             _ => null
         };
+    }
+
+    /// <summary>
+    /// Checks if a variable is declared in any active scope.
+    /// </summary>
+    private bool IsVariableDeclared(string name)
+    {
+        for (int i = variableScopes.Count - 1; i >= 0; i--)
+        {
+            if (variableScopes[i].ContainsKey(name))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Enters a new scope in the compiler, creating a new dictionary for it's variables.
+    /// </summary>
+    private void EnterCompilerScope()
+    {
+        variableScopes.Add([]);
+    }
+
+    /// <summary>
+    /// Exits the inner-most compiler scope, removing it.
+    /// </summary>
+    private void ExitCompilerScope()
+    {
+        if (variableScopes.Count > 1)
+        {
+            variableScopes.RemoveAt(variableScopes.Count - 1);
+        }
     }
 
     #endregion
