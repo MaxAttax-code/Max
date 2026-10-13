@@ -15,6 +15,7 @@ use crate::vm::MaxType;
 #[serde(rename_all = "PascalCase")]
 pub struct StoreOperand {
     pub name: String,
+    pub modifiers: Vec<String>,
     #[serde(rename = "Type")]
     pub max_type: Option<MaxType>,
     #[serde(rename = "ResortValue")]
@@ -47,14 +48,16 @@ pub struct UpdateIndexOperand {
 pub struct VariableEntry {
     /// The value is stored within an Rc smart pointer. Please keep that in mind.
     pub value: std::rc::Rc<std::cell::RefCell<crate::vm::Value>>,
+    pub modifiers: Vec<String>,
     pub max_type: Option<MaxType>,
     pub resort_value: Option<crate::vm::Value>,
 }
 
 impl VariableEntry {
-    pub fn new(nvalue: crate::vm::Value, typing: Option<MaxType>, resortable: Option<crate::vm::Value>) -> Self {
+    pub fn new(nvalue: crate::vm::Value, modifiers: Vec<String>, typing: Option<MaxType>, resortable: Option<crate::vm::Value>) -> Self {
         Self {
             value: Rc::new(RefCell::new(nvalue)),
+            modifiers: modifiers,
             max_type: typing,
             resort_value: resortable
         }

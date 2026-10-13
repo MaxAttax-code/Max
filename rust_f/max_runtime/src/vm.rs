@@ -1131,16 +1131,22 @@ impl VirtualMachine {
                         }
 
                         let entry = VariableEntry::new(
-                            val, var_info.max_type, resort_val,
+                            val, var_info.modifiers, var_info.max_type, resort_val,
                         );
+                        
+                        let existing = self.lookup_variable(&var_info.name);
 
-                        for scope in self.scopes.iter() {
-                            if scope.contains_key(&var_info.name) {
-                                panic!("Cannot declare duplicate variable of name {}", var_info.name);
-                            }
+                        /*
+                            Does the found variable (already declared) allow shadowing?
+                            Be aware that this finds the FIRST existing variable, so if it finds a variable shadowing another variable...
+                            And THAT variable does not have shadowing allows, then this fails!
+                        */ 
+                        if let Some(found) = existing && !found.modifiers.contains(&String::from("open")) {
+                            panic!("Cannot redeclare a variable! Modify the original variable to be shadowable if needed.")
                         }
 
                         let current_scope = Arc::make_mut(self.scopes.last_mut().expect("Scopes stack is empty!"));
+
                         current_scope.insert(var_info.name, entry);
                     }
                 },
@@ -1173,7 +1179,7 @@ impl VirtualMachine {
                         let mut found_binding = None;
 
                         // Check through each scope, and when the name is found, break with the new value
-                        // Btw, reverse the scopes to start from the most global one
+                        // Btw, reverse the scopes to start from the innermost one!
                         for scope in self.scopes.iter().rev() {
                             if let Some(entry) = scope.get(name) {
                                 found_binding = Some(Rc::clone(&entry.value));
@@ -1430,7 +1436,8 @@ impl VirtualMachine {
                                 } else {
                                     mut_scope.insert(
                                         var_name.clone(),
-                                        VariableEntry::new(val_to_assign, operand.variable_type.clone(), None),
+                                        // BTW, you'll especially see empty modifiers given to Variable entries, as they only apply to declarations
+                                        VariableEntry::new(val_to_assign, vec![], operand.variable_type.clone(), None),
                                     );
                                     None
                                 };
@@ -1654,7 +1661,7 @@ impl VirtualMachine {
                             for (name, argument) in parameter_names.into_iter().zip(arguments) {
                                 // All the parameters inputted are also inserted into the callscope as declared variables
                                 parameters.insert(name, VariableEntry::new(
-                                    argument, None, None )
+                                    argument, vec![], None, None )
                                 );
                             }
 
@@ -1939,6 +1946,34 @@ impl VirtualMachine {
             }
         }
         Ok(())
+    }
+
+    /**
+    Looks up the VM scopestack from the top for the first variable that matches the given name.
+    If no variable is found, None is returned.
+
+    ```
+    # use crate::vm::VirtualMachine;
+    # use crate::vm::VirtualMachine::lookup_variable;
+
+    let vm = VirtualMachine::new();
+    vm.scopes.push("VAR", VariableEntry::new(Value::String("A new variable!"), ..));
+
+    let variable = lookup_variable("VAR")
+
+    if let Some(unwrapped) = variable {
+        println!("{}", unwrapped); // "A new variable!"
+    }
+    ```
+     */
+    fn lookup_variable(&self, name: &str) -> Option<&VariableEntry> {
+        for frame in self.scopes.iter().rev() {
+            if let Some(entry) = frame.get(name) {
+                return Some(entry);
+            }
+        }
+
+        None
     }
 
     pub fn eval_comparison(operation: &str, left: Value, right: Value) -> Value {
@@ -2241,6 +2276,7 @@ impl VirtualMachine {
                 name,
                 VariableEntry::new(
                     value,
+                    vec![],
                     None,
                     None
                 )
@@ -2889,7 +2925,7 @@ impl VirtualMachine {
 
             call_scope.insert(
                 parameter.name.clone(),
-                VariableEntry::new(argument.clone(), None, None),
+                VariableEntry::new(argument.clone(), vec![], None, None),
             );
         }
 
