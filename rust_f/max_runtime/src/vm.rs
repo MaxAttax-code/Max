@@ -1142,7 +1142,7 @@ impl VirtualMachine {
                             And THAT variable does not have shadowing allows, then this fails!
                         */ 
                         if let Some(found) = existing && !found.modifiers.contains(&String::from("open")) {
-                            panic!("Cannot redeclare a variable! Modify the original variable to be shadowable if needed.")
+                            panic!("Cannot redeclare a variable! Modify the original variable to be open if needed.")
                         }
 
                         let current_scope = Arc::make_mut(self.scopes.last_mut().expect("Scopes stack is empty!"));
@@ -1254,6 +1254,11 @@ impl VirtualMachine {
                                 let entry = Arc::make_mut(scope)
                                     .get_mut(&var_info.name)
                                     .expect("The scope was checked to contain a variable entry, but an error occured");
+
+                                // A fixed variable? Gotta fix this one!
+                                if entry.modifiers.contains(&String::from("fixed")) {
+                                    panic!("Cannot modify a fixed variable")
+                                }
 
                                 // Type safety
                                 if let Some(ensurable) = &entry.max_type {
