@@ -73,7 +73,7 @@ enum DependencyKey {
 /// - The dependencies that the possible signal is attached with
 #[derive(Debug, Clone, PartialEq)]
 pub struct PossibleSignal {
-    current: Option<bool>,
+    pub current: Option<bool>,
     condition: Option<RuntimeLambda>,
     dependencies: HashSet<DependencyKey>,
 }
@@ -2224,6 +2224,11 @@ impl VirtualMachine {
                 // Perform type checking compatibility
                 if let Some(ensurable) = &entry.max_type {
                     MaxType::ensure_compatibility(ensurable, &value);
+                }
+
+                // Fixed variable check here!
+                if entry.modifiers.contains(&String::from("fixed")) {
+                    panic!("Cannot modify a fixed variable")
                 }
 
                 // We of course update the binding to whatever we are updating with

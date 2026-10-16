@@ -160,6 +160,16 @@ pub fn register_module(registry: &mut NativeRegistry) {
         )
     );
 
+    registry.register_task(
+        NativeTarget::Type("ListType"),
+        NativeTask::new(
+            "findIndex",
+            Some(IntegerType), // We do guarantee than the enumerator keys are integers!
+            vec![ParamSpec::required(ListType(None)), ParamSpec::required_none()],
+            self::list_find_index
+        )
+    );
+
 
     // ----- REGISTERING TASKS ----- \\
 
@@ -534,6 +544,24 @@ pub fn list_get_enumerator(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value 
     let new_dict = Value::new_dictionary(Some(String::from("IntegerType")), list.element_type.clone(), Some(true), indexes, items);
     new_dict
 }
+
+pub fn list_find_index(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
+    let [Value::List(list), value] = args.as_slice() else {
+        panic!("List task findIndex expects a list receiver and a valid value");
+    };
+    
+    let list = list.borrow();
+    // The found value
+    let found = list.items.iter().position(|x| x == value);
+    let index = match found {
+        // Get as an i64, or -1 if not found
+        Some(u) => u as i64,
+        None => -1
+    };
+
+    Value::Integer(index)
+}
+
 
 
 /*
