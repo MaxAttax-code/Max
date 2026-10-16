@@ -1017,12 +1017,12 @@ export function activate(context: vscode.ExtensionContext) {
                     }
                     
                     // Check if the target variable was declared with an explicit type (using 'as')
-                    const declRegex = new RegExp(`\\bdeclare\\s+${targetVar}\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*)`, 'g');
+                    const declRegex = new RegExp(`\\bdeclare\\s+((?:(?:fixed|open|static)\\s+)*)${targetVar}\\b(?:\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*))?`, 'g');
                     const typeMatch = declRegex.exec(text);
 
                     // When the typing matches
                     if (typeMatch) {
-                        const varType = typeMatch[1].toLowerCase();
+                        const varType = typeMatch[2].toLowerCase();
                         return getNativeMethodsForType(varType);
                     }
 
@@ -1104,7 +1104,8 @@ export function activate(context: vscode.ExtensionContext) {
                 { label: "join(seperator)", detail: "Join all elements in the list with the seperator" },
                 { label: "map(predicate)", detail: "Performs a predicate lambda upon each element within the list" },
                 { label: "filter(predicate)", detail: "Performs a predicate lambda upon each element in the list, removing those that do not pass" },
-                { label: "getEnumerator()", detail: "Enumerates the list, returning a new dictionary with the indexes as the keys, and list items as the values. Type Specification is also provided." },
+                { label: "getEnumerator()", detail: "Enumerates the list, returning a new dictionary with the indexes as the keys, and list items as the values. Type Specification is also provided" },
+                { label: "findIndex()", detail: "Gets the index of the first instance of the given value found. This returns -1 if nothing was found" },
                 { label: "isEmpty", detail: "Returns if the list is empty" },
                 { label: "first", detail: "Returns the first element" },
                 { label: "last", detail: "Returns the last element" }
@@ -1127,6 +1128,8 @@ export function activate(context: vscode.ExtensionContext) {
                 { label: "toLower()", detail: "Converts string to lowercase" },
                 { label: "trim()", detail: "Trims whitespace" },
                 { label: "contains(sub)", detail: "Returns if the substring is present inside the string" },
+                { label: "replace(search, replacer)", detail: "Replaces any found instance of the searchable string with the replacer" },
+                { label: "format(formatters)", detail: "Replaces each instance of '||' within the string with the given formatters in argument order" },
                 { label: "length", detail: "Returns length of string" },
                 { label: "isEmpty", detail: "Returns if the string is empty" },
                 { label: "split(delimiter)", detail: "Splits the string by a delimiter and returns a List of substrings" },

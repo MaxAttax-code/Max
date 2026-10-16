@@ -455,8 +455,6 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
             }
         }
 
-        Console.WriteLine($"Parameters compiled: {expression.Parameters.Count}");
-
         bytecode.Instructions.Add(new Instruction(
             OpCode.Lambda,
             new LambdaOperand(nextLambdaID, expression.Parameters.Count, expression.Parameters, captured, chunk)

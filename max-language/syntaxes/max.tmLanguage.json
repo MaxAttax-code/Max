@@ -96,7 +96,7 @@
                     "match": "\\b(as)\\b",
                     "captures": {
                         "1": {
-                            "name": "keyword.operator.max"
+                            "name": "keyword.control.max"
                         }
                     }
                 },
