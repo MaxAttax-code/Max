@@ -55,12 +55,16 @@ function activate(context) {
                 return null; // Suppress hover for member properties/methods
             }
             // 2. Check if the word is a declared variable (new RegExp so we can include the word within)
-            const declRegex = new RegExp(`\\bdeclare\\s+${word}\\b(?:\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*))?`, 'g');
+            // Check whether the word is a declared variable.
+            const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const declRegex = new RegExp(`\\bdeclare\\s+((?:(?:fixed|open|static)\\s+)*)${escapedWord}\\b(?:\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*))?`, "g");
             const declMatch = declRegex.exec(text);
             if (declMatch) {
-                const varType = declMatch[1] ? declMatch[1] : "inferred/dynamic";
-                // The message is written in Markdown!
-                return new vscode.Hover(`**Variable**: \`${word}\`\n\n**Type**: \`${varType}\``);
+                const modifierNames = declMatch[1].trim() || "none";
+                const varType = declMatch[2] ?? "inferred/dynamic";
+                return new vscode.Hover(`**Variable**: \`${word}\`\n\n` +
+                    `**Type**: \`${varType}\`\n\n` +
+                    `**Modifiers**: \`${modifierNames}\``);
             }
             // 3. Check if the word is a user-defined function or coroutine
             const defRegex = new RegExp(`\\bdefine\\s+(function|coroutine)\\s+${word}\\b`, 'g');
@@ -129,6 +133,15 @@ function activate(context) {
         TaskType[TaskType["function"] = 0] = "function";
         TaskType[TaskType["coroutine"] = 1] = "coroutine";
     })(TaskType || (TaskType = {}));
+    let LifecycleModifier;
+    (function (LifecycleModifier) {
+        LifecycleModifier[LifecycleModifier["open"] = 0] = "open";
+        LifecycleModifier[LifecycleModifier["static"] = 1] = "static";
+    })(LifecycleModifier || (LifecycleModifier = {}));
+    let MutabilityModifier;
+    (function (MutabilityModifier) {
+        MutabilityModifier[MutabilityModifier["fixed"] = 0] = "fixed";
+    })(MutabilityModifier || (MutabilityModifier = {}));
     /**
      * This function gives us the error linting needed for Max.
      * @param document The text document to inspect
@@ -358,14 +371,15 @@ function activate(context) {
             // ----------------------------
             // Find the name and value, with typing in the hue!
             // name [as type] = value
-            const mainMatch = /^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+(.+?))?\s*=\s*(.+)$/.exec(mainPart);
+            const mainMatch = /^((?:(?:fixed|open|static)\s+)+)?([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+(.+?))?\s*=\s*(.+)$/.exec(mainPart);
             if (!mainMatch) {
                 diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), "Invalid declaration statement", vscode.DiagnosticSeverity.Error));
                 continue;
             }
-            const identifier = mainMatch[1];
-            const typeSpect = mainMatch[2]; // May be undefined!
-            const value = mainMatch[3];
+            const modifierText = mainMatch[1]?.trim() ?? ""; // Something or an empty string
+            const identifier = mainMatch[2];
+            const typeSpect = mainMatch[3]; // May be undefined
+            const value = mainMatch[4];
             // ----------------------------
             // 3. Validate identifier
             // ----------------------------
@@ -374,21 +388,71 @@ function activate(context) {
                 diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Invalid declaration name, cannot use ${identifier}`, vscode.DiagnosticSeverity.Error));
                 continue;
             }
-            // Duplicate declaration found?
             let isDuplicate = false;
-            for (let i = scopeStack.length - 1; i >= 0; i--) {
-                const scope = scopeStack[i];
-                if (scope.vars.some(v => v.name === identifier)) {
+            const currentScopeIndex = scopeStack.length - 1;
+            for (let i = currentScopeIndex; i >= 0; i--) {
+                const existing = scopeStack[i].vars.find(v => v.name === identifier);
+                if (existing === undefined)
+                    continue;
+                if (existing.modifiers.lifecycleModifier !== LifecycleModifier.open) {
                     isDuplicate = true;
                     break;
                 }
+                break;
             }
             if (isDuplicate) {
                 diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Duplicate declaration name found: '${identifier}' already exists in this scope or an outer scope.`, vscode.DiagnosticSeverity.Error));
                 continue;
             }
             // ----------------------------
-            // 4. Parse type specification
+            // 4. Parse modifier
+            // ----------------------------
+            // Get names based on splitting whitespaces
+            const modifierNames = modifierText
+                ? modifierText.split(/\s+/)
+                : [];
+            const modifiers = {
+                lifecycleModifier: undefined,
+                mutabilityModifier: undefined
+            };
+            let invalidModifiers = false;
+            // Check through all the modifiers
+            for (const name of modifierNames) {
+                switch (name) {
+                    // The lifecycle modifiers
+                    case "open":
+                    case "static": {
+                        // Already defined? Not good!
+                        if (modifiers.lifecycleModifier !== undefined) {
+                            invalidModifiers = true;
+                            break;
+                        }
+                        modifiers.lifecycleModifier =
+                            name === "open"
+                                ? LifecycleModifier.open
+                                : LifecycleModifier.static;
+                        break;
+                    }
+                    // The mutability modifier (one for now)
+                    case "fixed": {
+                        if (modifiers.mutabilityModifier !== undefined) {
+                            invalidModifiers = true;
+                            break;
+                        }
+                        modifiers.mutabilityModifier =
+                            MutabilityModifier.fixed;
+                        break;
+                    }
+                }
+                if (invalidModifiers)
+                    break;
+            }
+            if (invalidModifiers) {
+                diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), "Conflicting or duplicate declaration modifiers.", vscode.DiagnosticSeverity.Error));
+                continue;
+            }
+            // ----------------------------
+            // 5. Parse type specification
             // ----------------------------
             if (typeSpect !== undefined) {
                 // Check out `parseType` for more
@@ -398,25 +462,35 @@ function activate(context) {
                 }
             }
             // ----------------------------
-            // 5. Validate value
+            // 6. Validate value
             // ----------------------------
             if (value.length === 0) {
                 diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Expected a value after '='`, vscode.DiagnosticSeverity.Error));
                 continue;
             }
             // ----------------------------
-            // 6. Validate resort value
+            // 7. Validate resort value
             // ----------------------------
             if (resortValue !== null && resortValue.length === 0) {
                 diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Expected a value after 'resort'`, vscode.DiagnosticSeverity.Error));
                 continue;
             }
-            // Push this onto the last scope we have
-            scopeStack[scopeStack.length - 1].vars.push({
+            const wanted = scopeStack[scopeStack.length - 1].vars;
+            // Find if the var already exists (of course this only applies to shadowing)
+            const existingIndex = wanted.findIndex(v => v.name === identifier);
+            const variable = {
                 name: identifier,
+                modifiers: modifiers,
                 type: typeSpect,
                 value: value
-            });
+            };
+            // Shadowing in the same scope? then just replace that variable!
+            if (existingIndex !== -1) {
+                wanted[existingIndex] = variable;
+            }
+            else {
+                wanted.push(variable);
+            }
         }
         // ---------------------------- \\
         // ------ DEFINITION LAWS ----- \\
@@ -550,6 +624,9 @@ function activate(context) {
         "resort",
         "say",
         "define",
+        "open",
+        "static",
+        "fixed",
         "if",
         "then",
         "elif",

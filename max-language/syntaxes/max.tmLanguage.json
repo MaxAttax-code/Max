@@ -9,6 +9,9 @@
             "include": "#keywords"
         },
         {
+            "include": "#declarations"
+        },
+        {
             "include": "#imports"
         },
         {
@@ -55,18 +58,6 @@
                 },
 
                 {
-                    "match": "\\b(declare)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-                    "captures": {
-                        "1": {
-                            "name": "keyword.declaration.max"
-                        },
-                        "2": {
-                            "name": "variable.other.max"
-                        }
-                    }
-                },
-
-                {
                     "match": "\\b(define)\\s+(function|coroutine)\\s+([A-Za-z_][A-Za-z0-9_]*)",
                     "captures": {
                         "1": {
@@ -79,6 +70,39 @@
                             "name": "meta.function.max"
                         }
                     }
+                }
+            ]
+        },
+
+        "declarations": {
+            "name": "meta.declaration.max",
+            "begin": "\\b(declare)\\b",
+            "beginCaptures": {
+                "1": {
+                    "name": "keyword.declaration.max"
+                }
+            },
+            "end": "(?=\\n|$)",
+            "patterns": [
+                {
+                    "match": "\\b(?:fixed|open|static)\\b",
+                    "name": "storage.modifier.max"
+                },
+                {
+                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*(?:as\\b|=))",
+                    "name": "variable.other.max"
+                },
+                {
+                    "match": "\\b(as)\\b",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.operator.max"
+                        }
+                    }
+                },
+                {
+                    "match": "\\b(?:int|float|string|boolean|list|dictionary)\\b",
+                    "name": "storage.type.max"
                 }
             ]
         },
