@@ -532,16 +532,16 @@ function activate(context) {
             switch (clauses) {
                 // There is an arrow clause? Just break, there's no params!
                 case "true:false": {
-                    if (taskType == TaskType.coroutine) {
-                        diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Invalid Task Definition structure. A Coroutine cannot have any parameters.`, vscode.DiagnosticSeverity.Error));
-                        continue;
-                    }
                     break;
                 }
                 // There is a with clause, so check params
                 case "false:true": {
                     // Very nice positioning
                     const withClauseIndex = match.index + match[0].indexOf(withClause);
+                    if (taskType == TaskType.coroutine) {
+                        diags.push(new vscode.Diagnostic(new vscode.Range(startPos, endPos), `Invalid Task Definition structure. A Coroutine cannot have any parameters.`, vscode.DiagnosticSeverity.Error));
+                        continue;
+                    }
                     params = parseTaskParameters(withClause, withClauseIndex);
                     break;
                 }

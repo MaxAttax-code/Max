@@ -12,6 +12,9 @@
             "include": "#declarations"
         },
         {
+            "include": "#definitions"
+        },
+        {
             "include": "#imports"
         },
         {
@@ -55,21 +58,6 @@
                 {
                     "name": "keyword.control.max",
                     "match": "\\b(if|then|elif|else|conclude|while|for|foreach|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield|using)\\b"
-                },
-
-                {
-                    "match": "\\b(define)\\s+(function|coroutine)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-                    "captures": {
-                        "1": {
-                            "name": "meta.definition.max"
-                        },
-                        "2": {
-                            "name": "meta.definition.type.max"
-                        },
-                        "3": {
-                            "name": "meta.function.max"
-                        }
-                    }
                 }
             ]
         },
@@ -89,10 +77,6 @@
                     "name": "storage.modifier.max"
                 },
                 {
-                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*(?:as\\b|=))",
-                    "name": "variable.other.max"
-                },
-                {
                     "match": "\\b(as)\\b",
                     "captures": {
                         "1": {
@@ -101,7 +85,68 @@
                     }
                 },
                 {
-                    "match": "\\b(?:int|float|string|boolean|list|dictionary)\\b",
+                    "name": "storage.type.max",
+                    "match": "\\b(int|float|string|boolean|list|dictionary)\\b"
+                },
+                {
+                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*(?:as\\b|=))",
+                    "name": "variable.other.max"
+                }
+            ]
+        },
+
+        
+        "definitions": {
+            "name": "meta.definition.max",
+            "begin": "\\b(define)\\b",
+            "beginCaptures": {
+                "1": {
+                    "name": "keyword.declaration.max"
+                }
+            },
+            "end": "(?=\\bdo\\b)",
+            "patterns": [
+                {
+                    "match": "\\b(function|coroutine)\\b",
+                    "name": "meta.definition.type.max"
+                },
+                {
+                    "match": "\\b(with|as|return)\\b",
+                    "name": "keyword.control.max"
+                },
+                {
+                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+with\\b)",
+                    "name": "entity.name.function.max"
+                },
+                {
+                    "match": "=>",
+                    "name": "keyword.operator.arithmetic.max"
+                },
+                {
+                    "begin": "\\(",
+                    "end": "\\)",
+                    "name": "punctuation.parenthesis.max",
+                    "patterns": [
+                        {
+                            "match": "\\b(int|float|string|boolean|list|dictionary)\\b",
+                            "name": "storage.type.max"
+                        },
+                        {
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+as\\b)",
+                            "name": "variable.parameter.max"
+                        },
+                        {
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*[,)=])",
+                            "name": "variable.parameter.max"
+                        },
+                        {
+                            "match": "\\b(as)\\b",
+                            "name": "keyword.control.max"
+                        }
+                    ]
+                },
+                {
+                    "match": "\\b(int|float|string|boolean|list|dictionary)\\b",
                     "name": "storage.type.max"
                 }
             ]
