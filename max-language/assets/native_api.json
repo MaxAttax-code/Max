@@ -153,6 +153,10 @@
         "label": "countExistingChars(str)",
         "detail": "Returns a dictionary of characters that appeared in the string and the number of appearances in the string"
     },
+    {
+        "label": "toDictionary(keysList, valuesList)",
+        "detail": "Intakes a keys list, and a values list, and creates a dictionary out of the two"
+    },
     
     {
       "label": "alphabet",
