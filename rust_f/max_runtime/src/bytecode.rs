@@ -124,6 +124,14 @@ pub struct TaskCallOperand {
     pub is_member_access: bool
 }
 
+/// An structure to hold the components of an enum. Also serves as the operand
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct EnumStructure {
+    pub identifier: String,
+    pub enum_members: HashMap<String, u64>
+}
+
 
 // ------------------- \\
 // ----- LAMBDAS ----- \\

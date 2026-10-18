@@ -869,6 +869,7 @@ pub struct VirtualMachine {
     task_definitions: HashMap<String, TaskInfo>,
     modules: Arc<HashMap<String, Bytecode>>,
     module_name: String,
+    enums: Vec<EnumStructure>,
 
     /// A collector for the dependencies the current possible handles hold
     dependency_collector: Option<Rc<RefCell<HashSet<DependencyKey>>>>,
@@ -890,6 +891,7 @@ impl VirtualMachine {
             task_definitions: HashMap::new(),
             modules: Arc::new(HashMap::new()),
             module_name: String::new(),
+            enums: vec![],
             dependency_collector: None,
             dependency_subscribers: HashMap::new(),
             evaluating_possible: HashSet::new(),
@@ -1008,7 +1010,7 @@ impl VirtualMachine {
                 "CreateCoroutine" => {
                     if let Some(operand_json) = &instr.operand {
                         let coroutine_info: CoroutineInfo = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid Store operand format");
+                            .expect("Invalid Create-Coroutine operand format");
 
                         let inst: CoroutineInstance
                             = CoroutineInstance { execution_state: ExecutionState::Idle, return_type: coroutine_info.return_type,
@@ -1018,6 +1020,17 @@ impl VirtualMachine {
                         self.stack.push(Value::Coroutine(Rc::new(RefCell::new(inst))));
                     } else {
                         panic!("[IP {:04}] Operand for creating a coroutine must include it's necessary info.", ip)
+                    }
+                }
+
+                "DefineEnum" => {
+                    if let Some(operand_json) = &instr.operand {
+                        let enum_info: EnumStructure = serde_json::from_value(operand_json.clone())
+                            .expect("Invalid Define-Enum operand format");
+
+                        // Push in the new enum
+                        // Ye that's it
+                        self.enums.push(enum_info);
                     }
                 }
 
@@ -1070,9 +1083,17 @@ impl VirtualMachine {
                                     ip, operand.member, operand.target
                                 );
                             }
-                        } else {
-                            panic!("[IP {:04}] Module '{}' is not loaded", ip, operand.target);
                         }
+
+                        // Or rather an enum?
+                        if let Some(found_enum) = self.enums.iter().find(|e| e.identifier == operand.target)  {
+                            let indexer = found_enum.enum_members.get(&operand.member)
+                                .expect(&format!("No member found for enum '{}' by the name '{}'", &operand.target, &operand.member).to_string());
+
+                            self.stack.push(Value::Integer(*indexer as i64));
+                        }
+
+                        panic!("Could not access member '{}' of unknown object '{}'", &operand.target, &operand.member)
                     }
                 }
 
