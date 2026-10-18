@@ -280,7 +280,7 @@ function activate(context) {
         // Regex to capture: define <tasktype> <name> [with (params as types...) | =>] [return type] do
         const defineRegex = /\bdefine\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:(with\s*\([^)]*\))|(=>))(?:\s+return\s+([A-Za-z_][A-Za-z0-9_]*))?\s+\bdo\b/g;
         // Regex for a block start and end
-        const blockRegex = /\b(then|do|conclude)\b/g;
+        const blockRegex = /\b(then|do|members|conclude)\b/g;
         // Regex to capture: // <comment>
         const lineCommentRegex = /\/\/.*$/gm;
         // Creating an interface? Nah, just a list of line comments that are found
@@ -569,7 +569,7 @@ function activate(context) {
             const keyword = match[0];
             const startPos = document.positionAt(match.index);
             const endPos = document.positionAt(match.index + keyword.length);
-            if (keyword === "then" || keyword === "do") {
+            if (keyword === "then" || keyword === "do" || keyword === "members") {
                 // Start a new scope
                 scopeStack.push({
                     startRange: new vscode.Range(startPos, endPos),
@@ -624,6 +624,7 @@ function activate(context) {
         "resort",
         "say",
         "define",
+        "enum",
         "open",
         "static",
         "fixed",
@@ -647,7 +648,8 @@ function activate(context) {
         "in",
         "with",
         "return",
-        "yield"
+        "yield",
+        "members"
     ];
     const operators = [
         "not",

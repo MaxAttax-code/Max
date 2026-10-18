@@ -57,7 +57,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.max",
-                    "match": "\\b(if|then|elif|else|conclude|while|for|foreach|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield|using)\\b"
+                    "match": "\\b(if|then|elif|else|conclude|while|for|foreach|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield|using|enum|members)\\b"
                 }
             ]
         },

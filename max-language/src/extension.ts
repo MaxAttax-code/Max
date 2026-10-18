@@ -349,7 +349,7 @@ export function activate(context: vscode.ExtensionContext) {
         const defineRegex = /\bdefine\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:(with\s*\([^)]*\))|(=>))(?:\s+return\s+([A-Za-z_][A-Za-z0-9_]*))?\s+\bdo\b/g;
 
         // Regex for a block start and end
-        const blockRegex = /\b(then|do|conclude)\b/g;
+        const blockRegex = /\b(then|do|members|conclude)\b/g;
 
         // Regex to capture: // <comment>
         const lineCommentRegex = /\/\/.*$/gm;
@@ -728,7 +728,7 @@ export function activate(context: vscode.ExtensionContext) {
                 case "false:true": {
                     // Very nice positioning
                     const withClauseIndex = match.index + match[0].indexOf(withClause);
-                    
+
                     if (taskType == TaskType.coroutine) {
                         diags.push(new vscode.Diagnostic(
                             new vscode.Range(startPos, endPos),
@@ -781,7 +781,7 @@ export function activate(context: vscode.ExtensionContext) {
             const startPos = document.positionAt(match.index);
             const endPos = document.positionAt(match.index + keyword.length);
 
-            if (keyword === "then" || keyword === "do") {
+            if (keyword === "then" || keyword === "do" || keyword === "members") {
                 // Start a new scope
                 scopeStack.push({
                     startRange: new vscode.Range(startPos, endPos),
@@ -855,6 +855,7 @@ export function activate(context: vscode.ExtensionContext) {
         "resort",
         "say",
         "define",
+        "enum",
 
         "open",
         "static",
@@ -883,7 +884,8 @@ export function activate(context: vscode.ExtensionContext) {
         "in",
         "with",
         "return",
-        "yield"
+        "yield",
+        "members"
     ]
 
     const operators = [
