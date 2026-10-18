@@ -306,6 +306,7 @@ namespace Max
                 "resort" => new Token(TokenType.Resort, word),
                 "say" => new Token(TokenType.Say, word),
                 "define" => new Token(TokenType.Define, word),
+                "enum" => new Token(TokenType.Enum, word),
                 
                 "function" or "coroutine" => new Token(TokenType.TaskType, word),
                 "static" or "open" or "fixed" => new Token(TokenType.Modifier, word),
@@ -338,6 +339,7 @@ namespace Max
                 "of" => new Token(TokenType.Of, word),
                 "in" => new Token(TokenType.In, word),
                 "with" => new Token(TokenType.With, word),
+                "members" => new Token(TokenType.Members, word),
 
                 _ => new Token(TokenType.Identifier, word)
             };

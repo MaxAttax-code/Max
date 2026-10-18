@@ -1801,6 +1801,75 @@ public class Parser(List<Token> tokens)
 
     #endregion
 
+    #region Parsing Enum
+
+    private EnumeratorStatement ParseEnum()
+    {
+        Advance(); // Past 'enum'
+
+        // This below is all necessary, use Consume
+        string name = Consume(TokenType.Identifier).Value;
+
+        // Members? Interesting syntax ay?
+        Consume(TokenType.Members);
+
+        List<EnumMember> enumMembers = ParseEnumMembers();
+
+        // Well that was quick
+        return new EnumeratorStatement(
+            name, enumMembers
+        );
+    }
+
+    /// <summary>
+    /// A method to parse enum members.
+    /// Making this a seperate method is cleaner and easier to read.
+    /// </summary>
+    /// <returns>The list of enum members. Can be empty if needed</returns>
+    private List<EnumMember> ParseEnumMembers()
+    {
+        List<EnumMember> enumMembers = [];
+        int enumerable = 0;
+
+        // Concluded already?
+        if (Match(TokenType.ConcludeStatement))
+        {
+            // Empty, as it is correctly assumed nothing was declared inbetween
+            return [];
+        }
+
+        do
+        {
+            string enumName = Consume(TokenType.Identifier).Value;
+            
+            EnumMember member = new(enumName, enumerable);
+            
+            // As simple as pi!
+            enumMembers.Add(member);
+            enumerable++;
+            
+            if (Match(TokenType.ConcludeStatement))
+            {
+                break;
+            }
+            // Also require commas between enumns if not ending 
+            else if (Match(TokenType.Comma))
+            {
+                Advance();
+            } else
+            {
+                throw new MaxSyntaxException("Expected a comma between enum members or a conclude statement in enum definition");
+            }
+        }
+        while (!Match(TokenType.ConcludeStatement));
+
+        Consume(TokenType.ConcludeStatement);
+
+        return enumMembers;
+    }
+
+    #endregion
+
     #region Parsing Using
 
     private UsingStatement ParseUsing()
@@ -1854,6 +1923,7 @@ public class Parser(List<Token> tokens)
             TokenType.Foreach => ParseForeach(),
             TokenType.Identifier => ParseIdentifierStatement(),
             TokenType.Define => ParseDefinition(),
+            TokenType.Enum => ParseEnum(),
             TokenType.Return => ParseReturn(),
             TokenType.Yield => ParseYield(),
             TokenType.Using => ParseUsing(),
