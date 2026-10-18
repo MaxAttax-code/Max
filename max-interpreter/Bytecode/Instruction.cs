@@ -92,4 +92,11 @@ namespace Max
     /// <param name="Captured">The list of captured variables within the params.</param>
     /// <param name="Chunk">The executable bytecode instructions for the lambda.</param>
     public record LambdaOperand(int ID, int Arity, List<string> Parameters, List<string> Captured, Bytecode.BytecodeChunk Chunk);
+
+    /// <summary>
+    /// A record to store an enum definition name and it's member names and enumerable values
+    /// </summary>
+    /// <param name="Identifier">The name to store under</param>
+    /// <param name="EnumMembers">The members to pass through, with their names and value</param>
+    public record EnumerationOperand(string Identifier, Dictionary<string, int> EnumMembers);
 }

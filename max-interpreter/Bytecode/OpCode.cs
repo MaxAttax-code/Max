@@ -6,6 +6,7 @@ namespace Max
         MakeList,
         MakeDictionary,
         CreateCoroutine,
+        DefineEnum,
         Lambda,
         MemberAccess,
 

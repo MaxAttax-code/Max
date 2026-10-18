@@ -29,11 +29,13 @@ namespace Max
         Of,
         In,
         With,
+        Members,
 
         Declare,
         Resort,
         Say,
         Define,
+        Enum,
 
         TaskType,
         Modifier,

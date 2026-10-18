@@ -91,6 +91,10 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
                 CompileTaskDefinition(task);
                 break;
 
+            case EnumeratorStatement enumerator:
+                CompileEnumerator(enumerator);
+                break;
+
             case ExpressionStatement expression:
                 CompileExpression(expression.Expression);
                 bytecode.Instructions.Add(new Instruction(OpCode.Pop));
@@ -319,6 +323,21 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
     private void CompileMemberAccess(MemberAccessExpression expression)
     {
+        // Local enum member access
+        if (expression.Target is VariableReference enumer
+            && !IsVariableDeclared(enumer.Name)
+            && bytecode.Enums.TryGetValue(enumer.Name, out EnumeratorStatement? definition))
+        {
+            EnumMember? member = definition.EnumMembers
+                .FirstOrDefault(m => m.Name == expression.Member) ?? throw new MaxSyntaxException(
+                    $"Enum '{enumer.Name}' does not have member '{expression.Member}'"
+                );
+
+            // Compile the integer index attached with the mem
+            CompileConstant(member.Enumerable);
+            return;
+        }
+
         // If we are calling a native module, simply call straight to it
         if (expression.Target is VariableReference targetVar 
             && !IsVariableDeclared(targetVar.Name) 
@@ -1275,6 +1294,35 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
     #endregion
 
+    #region Compiling Enums
+
+    private void CompileEnumerator(EnumeratorStatement statement)
+    {
+        // As a dictionary, so that the JSON can parse it
+        Dictionary<string, int> members = [];
+
+        foreach (EnumMember member in statement.EnumMembers)
+        {
+            if (!members.TryAdd(member.Name, member.Enumerable))
+            {
+                throw new MaxSyntaxException(
+                    $"Duplicate enum member found '{member.Name}'"
+                );
+            }
+        }
+
+        EnumerationOperand operand = new(
+            statement.Identifier,
+            members
+        );
+
+        bytecode.Enums.Add(statement.Identifier, statement);
+
+        bytecode.Instructions.Add(new Instruction(OpCode.DefineEnum, operand));
+    }
+
+    #endregion
+
     #region Helper Methods
 
     /// <summary>
@@ -1286,6 +1334,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
     {
         if (bytecode.Tasks.ContainsKey(name) ||
             bytecode.Coroutines.ContainsKey(name) ||
+            bytecode.Enums.ContainsKey(name) ||
             nativeRegistry.TryGetTask(null, name, out _))
         {
             return true;
