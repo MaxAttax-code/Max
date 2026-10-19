@@ -175,6 +175,12 @@ namespace Max
         public object? Value { get; } = value;
     }
 
+    public class EnumStructure(string identifier, Dictionary<string, int> enumMembers)
+    {
+        public string Identifier { get; } = identifier;
+        public Dictionary<string, int> EnumMembers { get; } = enumMembers;
+    }
+
     public interface IIterable
     {
     }

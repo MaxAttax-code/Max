@@ -24,7 +24,7 @@ namespace Max
         /// <summary>
         /// The enums the bytecode holds
         /// </summary>
-        public Dictionary<string, EnumeratorStatement> Enums { get; } = [];
+        public Dictionary<string, EnumStructure> Enums { get; } = [];
 
         // Creating the options as a reusable instance is less performance-heavt
         private static readonly JsonSerializerOptions bytecodeExportOptions = new()
@@ -67,6 +67,7 @@ namespace Max
         /// </summary>
         [JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
         [JsonDerivedType(typeof(PrimitiveTypeRepresentation), typeDiscriminator: "PrimitiveType")]
+        [JsonDerivedType(typeof(EnumeratorTypeRepresentation), typeDiscriminator: "EnumType")]
         [JsonDerivedType(typeof(ListTypeRepresentation), typeDiscriminator: "ListType")]
         [JsonDerivedType(typeof(DictionaryTypeRepresentation), typeDiscriminator: "DictionaryType")]
         public abstract class TypeRepresentation
@@ -80,6 +81,12 @@ namespace Max
         {
             [JsonPropertyName("name")]
             public string Name { get; set; } = name;
+        }
+
+        public class EnumeratorTypeRepresentation(string enumName) : TypeRepresentation
+        {
+            [JsonPropertyName("name")]
+            public string EnumName { get; set; } = enumName;
         }
 
         // For lists, including their element type
@@ -114,6 +121,8 @@ namespace Max
                     ToTypeRepresentation(maxDict.KeyType),
                     ToTypeRepresentation(maxDict.ValueType)
                 ),
+
+                EnumType maxEnum => new EnumeratorTypeRepresentation(maxEnum.EnumIdentifier),
                 
                 // All primitive/non-recursive types
                 _ => new PrimitiveTypeRepresentation(maxType.GetType().Name)

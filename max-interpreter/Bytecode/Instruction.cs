@@ -33,11 +33,11 @@ namespace Max
     public record UpdateIndexOperand(string Operation, string? TargetName);
 
     /// <summary>
-    /// A record to hold the target and member of a member access operand in one!
+    /// A record to hold the target to access, and how to access it
     /// </summary>
-    /// <param name="target"></param>
-    /// <param name="member"></param>
-    public record MemberAccessOperand(string Target, string Member);
+    /// <param name="MemberName">The target to access</param>
+    /// <param name="AccessType">The access type of the operand</param>
+    public record MemberAccessOperand(string MemberName, MemberAccessType AccessType);
 
     /// <summary>
     /// A record of a foreach item; using the collection and index slot, and the variable name
@@ -71,6 +71,8 @@ namespace Max
     ) : InfoRecord;
 
     public record CoroutineInfo(MaxType? ReturnType, int EntryPoint = -1) : InfoRecord;
+
+    public record EnumInfo(List<EnumMember> EnumMembers) : InfoRecord;
 
     public record TaskReference(string? Target, string Name);
 

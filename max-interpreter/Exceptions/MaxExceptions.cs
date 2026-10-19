@@ -37,6 +37,8 @@ namespace Max
     {
     }
 
+    public class MaxEnumException(string message) : Exception(message);
+
     public class MaxLogicException(string message) : MaxComparisonException(message)
     {
     }

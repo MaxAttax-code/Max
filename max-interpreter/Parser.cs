@@ -7,6 +7,8 @@ public class Parser(List<Token> tokens)
     private readonly List<Token> tokens = tokens;
     private int position = 0;
 
+    private readonly EnumTypeRegistry enumTypeRegistry = new();
+
     #region Common Helpers
 
     /// <summary>
@@ -662,7 +664,12 @@ public class Parser(List<Token> tokens)
                 // Target iterable types for further type annotations
                 // Will return the normal assignedType anyway if it fails
                 type = AttemptIterableTyping(assignedType);
-            } else
+            }
+            else if (enumTypeRegistry.getEnums().TryGetValue(typeName, out EnumType? enumeratorType))
+            {
+                type = enumeratorType;
+            }
+            else
             {
                 throw new MaxTypeException("Type assignment to a variable must be a real type");
             }
@@ -1814,6 +1821,9 @@ public class Parser(List<Token> tokens)
         Consume(TokenType.Members);
 
         List<EnumMember> enumMembers = ParseEnumMembers();
+
+        // Add to Parser enum list
+        enumTypeRegistry.AddEnum(name);
 
         // Well that was quick
         return new EnumeratorStatement(

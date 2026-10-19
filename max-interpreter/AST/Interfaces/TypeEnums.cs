@@ -44,4 +44,15 @@ namespace Max
     {
         Fixed
     }
+
+    /// <summary>
+    /// Defines what kind of member accessing we are doing
+    /// </summary>
+    public enum MemberAccessType
+    {
+        Module,
+        Enum,
+
+        None // Represents that there should be no member accessing
+    }
 }

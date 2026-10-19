@@ -323,59 +323,34 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
     private void CompileMemberAccess(MemberAccessExpression expression)
     {
-        // Local enum member access
-        if (expression.Target is VariableReference enumer
-            && !IsVariableDeclared(enumer.Name)
-            && bytecode.Enums.TryGetValue(enumer.Name, out EnumeratorStatement? definition))
-        {
-            EnumMember? member = definition.EnumMembers
-                .FirstOrDefault(m => m.Name == expression.Member) ?? throw new MaxSyntaxException(
-                    $"Enum '{enumer.Name}' does not have member '{expression.Member}'"
-                );
+        // Determine how this particular member should be accessed.
+        MemberAccessType accessType = ResolveMemberAccessType(expression);
 
-            // Compile the integer index attached with the mem
-            CompileConstant(member.Enumerable);
-            return;
-        }
-
-        // If we are calling a native module, simply call straight to it
-        if (expression.Target is VariableReference targetVar 
-            && !IsVariableDeclared(targetVar.Name) 
-            && nativeRegistry.IsStaticModule(targetVar.Name))
-        {
-            // Emit CallNative directly targeting the static module
-            // Target is set to the module name, so self isn't passed as an argument
-            bytecode.Instructions.Add(new Instruction(
-                OpCode.CallNative,
-                new TaskCallOperand(targetVar.Name, expression.Member, 0, false)
-            ));
-            return;
-        }
-
-        // Are we accessing an import? Allow nested member access
-        if (expression.Target is VariableReference importedVar
-            && !IsVariableDeclared(importedVar.Name)
-            && symbolsTable.TryGetValue(importedVar.Name, out SymbolTable? table))
-        {
-            if (table.Contents.TryGetValue(expression.Member, out _))
-            {
-                // Emit explicit MemberAccess opcode
-                bytecode.Instructions.Add(new Instruction(
-                    OpCode.MemberAccess,
-                    new MemberAccessOperand(importedVar.Name, expression.Member)
-                ));
-                return;
-            }
-        }
-
-        // Compile the target (aka the 'self' to be used for a native function)
+        // Compile the object/module/enum we are accessing.
         CompileExpression(expression.Target);
 
-        // Now give CallNative instructions with Target set to null
-        // The argument count is 1 because the 'self' object counts as the single argument to the property getter
+        if (accessType != MemberAccessType.None)
+        {
+            bytecode.Instructions.Add(new Instruction(
+                OpCode.MemberAccess,
+                new MemberAccessOperand(
+                    expression.Member,
+                    accessType
+                )
+            ));
+
+            return;
+        }
+
+        // Instance property access goes through its native getter.
         bytecode.Instructions.Add(new Instruction(
             OpCode.CallNative,
-            new TaskCallOperand(null, expression.Member, 1, true)
+            new TaskCallOperand(
+                null,
+                expression.Member,
+                1,
+                true
+            )
         ));
     }
 
@@ -1316,7 +1291,21 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
             members
         );
 
-        bytecode.Enums.Add(statement.Identifier, statement);
+        if (HasDuplicateNaming(statement.Identifier))
+        {
+            throw new MaxEnumException($"Duplicate naming found when attempting to create enum '{statement.Identifier}'");
+        }
+
+        // As a structure so that the JSON serialises the enum members as a dictionary
+        EnumStructure structure = new(
+            statement.Identifier,
+            statement.EnumMembers.ToDictionary(
+                m => m.Name,
+                m => m.Enumerable
+            )
+        );
+
+        bytecode.Enums.Add(statement.Identifier, structure);
 
         bytecode.Instructions.Add(new Instruction(OpCode.DefineEnum, operand));
     }
@@ -1448,6 +1437,61 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
         {
             variableScopes.RemoveAt(variableScopes.Count - 1);
         }
+    }
+
+    private MemberAccessType ResolveMemberAccessType(MemberAccessExpression expression)
+    {
+        // This process is surprisingly complex. Let's take it in steps
+
+        // 1. If the target is a variable reference (e.g., Direction.North or math.PI)
+        if (expression.Target is VariableReference varRef)
+        {
+            string name = varRef.Name;
+            
+            if (!IsVariableDeclared(name))
+            {
+                if (bytecode.Enums.TryGetValue(name, out _))
+                {
+                    return MemberAccessType.Enum;
+                }
+
+                if (symbolsTable.TryGetValue(name, out _))
+                {
+                    return MemberAccessType.Module;
+                }
+            }
+        }
+        
+        // 2. If the target is another member access (e.g., map.Direction in map.Direction.North)
+        else if (expression.Target is MemberAccessExpression nestedTarget)
+        {
+            // Check local enums first
+            if (bytecode.Enums.TryGetValue(nestedTarget.Member, out _))
+            {
+                return MemberAccessType.Enum;
+            }
+
+            // Check if the nested target's root is a module, and if the member is an Enum type
+            // (Assuming your module symbol table tracks types or you can check if it's an enum)
+            if (nestedTarget.Target is VariableReference modVar && symbolsTable.TryGetValue(modVar.Name, out var symbolTbl))
+            {
+                // If the symbol table contains the member and it represents an enum
+                if (symbolTbl.Contents.TryGetValue(nestedTarget.Member, out _))
+                {
+                    // If it's an enum, return Enum access type
+                    return MemberAccessType.Enum;
+                }
+            }
+
+            // Otherwise, simply return a module type
+            if (symbolsTable.TryGetValue(nestedTarget.Member, out _))
+            {
+                return MemberAccessType.Module;
+            }
+        }
+
+        // Default to instance property access
+        return MemberAccessType.None;
     }
 
     #endregion

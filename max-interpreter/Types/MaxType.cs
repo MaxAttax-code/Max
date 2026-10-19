@@ -49,6 +49,26 @@ namespace Max {
     {
     }
 
+    public class EnumType(string enumIdentifier) : MaxType
+    {
+        public string EnumIdentifier { get; } = enumIdentifier;
+    }
+
+    public class EnumTypeRegistry
+    {
+        private readonly Dictionary<string, EnumType> Max_EnumNames = [];
+
+        public void AddEnum(string enumName)
+        {
+            Max_EnumNames.Add(enumName, new EnumType(enumName));
+        }
+
+        public Dictionary<string, EnumType> getEnums()
+        {
+            return Max_EnumNames;
+        }
+    }
+
     public static class TypeRegistry
     {
         public static readonly Dictionary<string, MaxType> Max_TypeNames = new()

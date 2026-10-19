@@ -44,6 +44,12 @@ namespace Max
 
                     table.Contents.Add(taskDef.Name, info);
                 }
+                else if (statement is EnumeratorStatement enumStatement)
+                {
+                    InfoRecord info = new EnumInfo(enumStatement.EnumMembers);
+
+                    table.Contents.Add(enumStatement.Identifier, info);
+                }
             }
 
             return table;
