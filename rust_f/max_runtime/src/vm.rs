@@ -26,6 +26,8 @@ pub enum Value {
     Boolean(bool),
     Coroutine(CoroutineHandle), // Special: Coroutines are tasks and variable Values too!
     Lambda(RuntimeLambda), // Given a RuntimeLambda instance to work with
+    EnumDefinition(EnumStructure), // Allow standalone and typing
+    EnumMember(EnumMember), // An enum member alone
     Possible(PossibleHandle),
     Nil
 }
@@ -54,6 +56,93 @@ pub struct DictionaryValue {
     pub keys: Vec<Value>,
     pub values: Vec<Value>,
 }
+
+/**
+A structure to hold the actual Enum within an EnumDefinition Values.
+Enum members are held not only with their integer-backed values, but their identification as well
+*/
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumStructure {
+    // We will borrow it a lot, so it's nicer to use an RC rather than cloning
+    pub enum_name: Rc<RefCell<String>>,
+    pub enum_members: Vec<EnumMember>
+}
+
+impl EnumStructure {
+    pub fn new(enum_name: String, enum_members: Vec<EnumMember>) -> Self {
+        EnumStructure {
+            enum_name: Rc::new(RefCell::new(enum_name)),
+            enum_members
+        }
+    }
+
+    /**
+    Converts an EnumOperandStructure into an EnumStructure.
+    Keep in mind this must clone the identifier name and the member name for each member in the Structure.
+    This function also consumes the operand given, meaning you cannot use it afterwards.
+
+    ### Example
+
+    ```
+    # use crate::vm::EnumOperandStructure
+    # use crate::vm::EnumStructure
+    
+    let enum_members = Hashmap::new();
+    enum_members.insert("e1", 0);
+    enum_members.insert("e2", 1);
+    enum_members.insert("e3", 2);
+
+    let enum_operand = EnumOperandStructure {
+        identifier: "Example",
+        enum_members
+    };
+
+    let enum_struct: EnumStructure = EnumStructure::operand_to_struct(enum_operand.clone());
+
+    assert_ne!(enum_operand, enum_struct)
+    assert_eq!(enum_struct.enum_name, enum_operand.identifier);
+    ```
+    */
+    pub fn operand_to_struct(enum_operand: EnumOperandStructure) -> EnumStructure {
+        let name = enum_operand.identifier.clone();
+        let mut members: Vec<EnumMember> = vec![];
+
+        for member in enum_operand.enum_members {
+            let new_member: EnumMember = EnumMember::new(enum_operand.identifier.clone(), member.0, Value::Integer(member.1 as i64));
+            members.push(new_member);
+        }
+
+        EnumStructure::new(name, members)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumMember {
+    pub enum_name: Rc<RefCell<String>>,
+    pub member_name: Rc<RefCell<String>>,
+    pub value: Box<Value>
+}
+
+impl EnumMember {
+    pub fn new(enum_name: String, member_name: String, value: Value) -> EnumMember {
+        EnumMember {
+            enum_name: Rc::new(RefCell::new(enum_name)),
+            member_name: Rc::new(RefCell::new(member_name)),
+            value: Box::new(value)
+        }
+    }
+
+    pub fn hashmap_to_vecof(enum_name: String, enum_hashmap: HashMap<String, u64>) -> Vec<EnumMember> {
+        let mut enum_members: Vec<EnumMember> = vec![];
+        for member in enum_hashmap {
+            let new_member: EnumMember = EnumMember::new(enum_name.clone(), member.0, Value::Integer(member.1 as i64));
+            enum_members.push(new_member);
+        }
+
+        enum_members
+    }
+}
+
 
 /// A special handle containing a possible signal for a possible value
 pub type PossibleHandle = Rc<RefCell<PossibleSignal>>;
@@ -120,6 +209,9 @@ impl fmt::Display for Value {
 
             Value::Coroutine(coroutine) => write!(f, "{:#?}", coroutine.borrow()),
             Value::Lambda(lambda) => write!(f, "lambda#{}", lambda.definition.id),
+
+            Value::EnumDefinition(enums) => write!(f, "{}: {:#?}", enums.enum_name.borrow(), enums.enum_members),
+            Value::EnumMember(memb) => write!(f, "{}.{}", memb.enum_name.borrow(), memb.member_name.borrow()),
 
             Value::Nil => write!(f, "nil"),
         }
@@ -228,6 +320,8 @@ impl Value {
 
             (Value::Coroutine(co1), Value::Coroutine(co2)) => Value::Boolean(Rc::ptr_eq(co1, co2)),
             (Value::Lambda(lambda1), Value::Lambda(lambda2)) => Value::Boolean(lambda1.definition.id == lambda2.definition.id),
+
+            (Value::EnumDefinition(enum1), Value::EnumDefinition(enum2)) => Value::Boolean(enum1.enum_name == enum2.enum_name),
 
             _ => Value::Boolean(false),
         }
@@ -346,6 +440,9 @@ impl Value {
             Value::Coroutine(..) => Some("CoroutineType".into()),
             Value::Lambda(..) => Some("LambdaType".into()),
 
+            Value::EnumDefinition(enums) => Some("EnumType-".to_string() + &enums.enum_name.borrow()),
+            Value::EnumMember(memb) => Some(memb.enum_name.borrow().clone()),
+
             Value::Nil => None
         }
     }
@@ -371,6 +468,9 @@ impl Value {
             Value::Coroutine(..) => MaxType::CoroutineType,
             // Keep in mind that the lambdas arity is kept within it's definition (metadata)
             Value::Lambda(lambda) => MaxType::TaskType(lambda.definition.arity as usize),
+
+            Value::EnumDefinition(enums) => MaxType::EnumType(enums.enum_name.borrow().clone()),
+            Value::EnumMember(memb) => MaxType::EnumType(memb.enum_name.borrow().clone()),
 
             Value::Nil => MaxType::NoType
         }
@@ -488,6 +588,8 @@ pub enum MaxType {
 
     TaskType(usize), // I.e. Lambdas
     CoroutineType,
+
+    EnumType(String), // An EnumType has a specific identifier unique to it
 
     // A special type for niche situations within the code
     NoType
@@ -609,6 +711,9 @@ impl MaxType {
                 false
             },
 
+            (MaxType::EnumType(t), Value::EnumDefinition(e)) => t == &e.enum_name.borrow().clone(),
+            (MaxType::EnumType(t), Value::EnumMember(mem)) => t == &mem.enum_name.borrow().clone(),
+
             // These two are special!
             (MaxType::NoType, _) => true,
             (_, Value::Nil) => true,
@@ -711,7 +816,9 @@ impl fmt::Display for MaxType {
             },
 
             MaxType::CoroutineType => write!(f, "CoroutineType"),
-            MaxType::TaskType(_) => write!(f, "TaskType")
+            MaxType::TaskType(_) => write!(f, "TaskType"),
+
+            MaxType::EnumType(enum_name) => write!(f, "{}", enum_name)
         }
     }
 }
@@ -800,6 +907,12 @@ impl<'de> Deserialize<'de> for MaxType {
                         Ok(MaxType::string_name_to_max(&type_name))
                     }
 
+                    // Enum types are custom
+                    "EnumType" => {
+                        let enum_name = name.ok_or_else(|| de::Error::missing_field("name"))?;
+                        Ok(MaxType::EnumType(enum_name))
+                    }
+
                     // Iterables hold types for their respective elements too! \\
 
                     "ListType" => Ok(MaxType::ListType(element_type.map(Box::new))),
@@ -869,7 +982,7 @@ pub struct VirtualMachine {
     task_definitions: HashMap<String, TaskInfo>,
     modules: Arc<HashMap<String, Bytecode>>,
     module_name: String,
-    enums: Vec<EnumStructure>,
+    enums: HashMap<String, EnumStructure>,
 
     /// A collector for the dependencies the current possible handles hold
     dependency_collector: Option<Rc<RefCell<HashSet<DependencyKey>>>>,
@@ -891,7 +1004,7 @@ impl VirtualMachine {
             task_definitions: HashMap::new(),
             modules: Arc::new(HashMap::new()),
             module_name: String::new(),
-            enums: vec![],
+            enums: HashMap::new(),
             dependency_collector: None,
             dependency_subscribers: HashMap::new(),
             evaluating_possible: HashSet::new(),
@@ -1025,12 +1138,12 @@ impl VirtualMachine {
 
                 "DefineEnum" => {
                     if let Some(operand_json) = &instr.operand {
-                        let enum_info: EnumStructure = serde_json::from_value(operand_json.clone())
+                        let enum_info: EnumOperandStructure = serde_json::from_value(operand_json.clone())
                             .expect("Invalid Define-Enum operand format");
 
                         // Push in the new enum
                         // Ye that's it
-                        self.enums.push(enum_info);
+                        self.enums.insert(enum_info.identifier.clone(), EnumStructure::operand_to_struct(enum_info));
                     }
                 }
 
@@ -1063,37 +1176,68 @@ impl VirtualMachine {
                         let operand: MemberAccessOperand = serde_json::from_value(operand_json.clone())
                             .expect("Invalid MemberAccessOperand format");
 
-                        // Found a module?
-                        if let Some(module_bytecode) = self.modules.get(&operand.target) {
-                            if let Some(coroutine_info) = module_bytecode.coroutines.get(&operand.member) {
-                                let instance = CoroutineInstance {
-                                    execution_state: ExecutionState::Idle,
-                                    return_type: coroutine_info.return_type.clone(),
-                                    instruction_point: coroutine_info.entry_point,
-                                    entry_point: coroutine_info.entry_point,
-                                    saved_scopes: None,
-                                    module_name: operand.target.clone()
+                        // Match based on the access type sent by the compiler ("Module", "Enum", etc.)
+                        match operand.access_type.as_str() {
+                            "Module" => {
+                                // Let us pop the module name like a balloon off the stack
+                                let target_val = self.stack.pop().unwrap_or(Value::Nil);
+                                let module_name = match target_val {
+                                    Value::String(s) => s,
+                                    _ => panic!("[IP {:04}] Expected module name string on stack, got {:?}", ip, target_val),
                                 };
-                                
-                                // Push in that new coroutine instance!
-                                self.stack.push(Value::Coroutine(Rc::new(RefCell::new(instance))));
-                            } else {
-                                panic!(
-                                    "[IP {:04}] Member '{}' not found in imported module '{}'",
-                                    ip, operand.member, operand.target
-                                );
+
+                                // Look up the imported module
+                                if let Some(module_bytecode) = self.modules.get(&module_name) {
+                                    // Check if the member is an enum inside this module
+                                    if let Some(enum_info) = module_bytecode.enums.get(&operand.member_name) {
+                                        let enum_def = Value::EnumDefinition(EnumStructure::operand_to_struct(enum_info.clone()));
+                                        
+                                        // Now, push the resolved EnumDefinition onto the stack!
+                                        self.stack.push(enum_def);
+                                    } 
+                                    // Twas a coroutine instead?
+                                    else if let Some(coroutine_info) = module_bytecode.coroutines.get(&operand.member_name) {
+                                        let instance = CoroutineInstance {
+                                            execution_state: ExecutionState::Idle,
+                                            return_type: coroutine_info.return_type.clone(),
+                                            instruction_point: coroutine_info.entry_point,
+                                            entry_point: coroutine_info.entry_point,
+                                            saved_scopes: None,
+                                            module_name: module_name.clone(),
+                                        };
+                                        self.stack.push(Value::Coroutine(Rc::new(RefCell::new(instance))));
+                                    } 
+                                    else {
+                                        panic!(
+                                            "[IP {:04}] Member '{}' not found in imported module '{}'",
+                                            ip, operand.member_name, module_name
+                                        );
+                                    }
+                                } else {
+                                    panic!("[IP {:04}] Module '{}' not found", ip, module_name);
+                                }
+                            }
+
+                            "Enum" => {
+                                // Else pop the EnumDefinition that was pushed by the previous access
+                                let target_val = self.stack.pop().unwrap_or(Value::Nil);
+                                let enum_struct = match target_val {
+                                    Value::EnumDefinition(e) => e,
+                                    _ => panic!("[IP {:04}] Expected EnumDefinition on stack for enum member access, got {:?}", ip, target_val),
+                                };
+
+                                // Look up the specific member (e.g., "North") inside the enum
+                                let member_value = enum_struct.enum_members.into_iter().find(|mem| mem.member_name.borrow().clone() == operand.member_name)
+                                    .unwrap_or_else(|| panic!("[IP {:04}] No member found for enum '{}' by the name '{}'", ip, enum_struct.enum_name.borrow(), operand.member_name));
+
+                                // Finalllyyyyy, push the final resolved enum member value onto the stack
+                                self.stack.push(Value::EnumMember(member_value));
+                            }
+
+                            _ => {
+                                panic!("[IP {:04}] Unknown member access type: '{}'", ip, operand.access_type);
                             }
                         }
-
-                        // Or rather an enum?
-                        if let Some(found_enum) = self.enums.iter().find(|e| e.identifier == operand.target)  {
-                            let indexer = found_enum.enum_members.get(&operand.member)
-                                .expect(&format!("No member found for enum '{}' by the name '{}'", &operand.target, &operand.member).to_string());
-
-                            self.stack.push(Value::Integer(*indexer as i64));
-                        }
-
-                        panic!("Could not access member '{}' of unknown object '{}'", &operand.target, &operand.member)
                     }
                 }
 
@@ -1197,15 +1341,12 @@ impl VirtualMachine {
                         // Get string name
                         let name = operand_json.as_str()
                             .expect("The operand of a 'Load' must be a string name");
-                        let mut found_binding = None;
+                        let mut found_binding: Option<Rc<RefCell<Value>>> = None;
 
                         // Check through each scope, and when the name is found, break with the new value
                         // Btw, reverse the scopes to start from the innermost one!
-                        for scope in self.scopes.iter().rev() {
-                            if let Some(entry) = scope.get(name) {
-                                found_binding = Some(Rc::clone(&entry.value));
-                                break;
-                            }
+                        if let Some(found_var) = self.lookup_variable(name) {
+                            found_binding = Some(Rc::clone(&found_var.value));
                         }
 
                         // Update here
@@ -1219,6 +1360,8 @@ impl VirtualMachine {
                                 // Same here for lists and dictionaries, though they got their own kind of Dependency Key
                                 Value::List(list) => self.track_dependency(DependencyKey::List(Rc::as_ptr(list) as usize)),
                                 Value::Dictionary(dictionary) => self.track_dependency(DependencyKey::Dictionary(Rc::as_ptr(dictionary) as usize)),
+
+                                // NOTE: Enums can't be changed after being defined, so no dependencies are ever placed upon them
 
                                 _ => {}
                             }
@@ -1238,8 +1381,33 @@ impl VirtualMachine {
                                 // In the end, it will be pushed into the stack!
                                 self.stack.push(val);
                             }
-                        } else {
-                            panic!("[IP {:04}] Variable '{}' is not defined in any active scope.", ip, name);
+                        }
+                        // Check if it's an imported module
+                        else if self.modules.contains_key(name) {
+                            // Push a string value of the name onto the stack
+                            self.stack.push(Value::String(name.to_string()));
+                            ip += 1;
+                            continue;
+                        }
+                        else {
+                            // No variable found? Let's check enums now
+
+                            let mut found: Option<(&String, &EnumStructure)> = None;
+
+                            for enumerator in &self.enums {
+                                if name == &enumerator.1.enum_name.borrow().clone() {
+                                    found = Some(enumerator);
+                                }
+                            }
+
+                            if let Some(enum_found) = found {
+                                let enum_value: Value = Value::EnumDefinition(enum_found.1.clone());
+
+                                self.stack.push(enum_value);
+                            } else {
+                                panic!("[IP {:04}] Variable or Enum '{}' is not defined in any active scope.", ip, name);
+                            }
+
                         }
                     }
                 }
@@ -1753,10 +1921,15 @@ impl VirtualMachine {
 
                         // Local Task in the same file
                         if let Some(task) = self.task_definitions.get(&call.name).cloned() {
+                            // Transform the runtime VM enums into the serializable bytecode operand structure
+                            // Perhaps a little extra but oh well
+                            let bytecode_enums: HashMap<String, EnumOperandStructure> = self.vm_enums_to_bytecode();
+
                             let current_bytecode = Bytecode {
                                 instructions: (*active_instructions).clone(),
                                 tasks: self.task_definitions.clone(),
                                 coroutines: HashMap::new(),
+                                enums: bytecode_enums
                             };
 
                             self.invoke_task(
@@ -1948,6 +2121,37 @@ impl VirtualMachine {
      ------------------------
     */
 
+    pub fn vm_enums_to_bytecode(&self) -> HashMap<String, EnumOperandStructure> {
+        // Transform the runtime VM enums into the serializable bytecode operand structure
+        // Perhaps a little extra but oh well
+        let bytecode_enums: HashMap<String, EnumOperandStructure> = self.enums
+            .iter()
+            .map(|(name, structure)| {
+                // Convert Vec<EnumMember> back into a HashMap<String, i64>
+                let members_map = structure.enum_members
+                    .iter()
+                    .map(|m| {
+                        let int_val = match *m.value {
+                            Value::Integer(i) => i as u64,
+                            _ => 0,
+                        };
+                        (m.member_name.borrow().clone(), int_val)
+                    })
+                    .collect();
+
+                (
+                    name.clone(),
+                    EnumOperandStructure {
+                        identifier: structure.enum_name.borrow().clone(),
+                        enum_members: members_map,
+                    },
+                )
+            })
+            .collect();
+
+        bytecode_enums
+    }
+
     /// Loads all JSON files inside a given directory into the VM module map
     pub fn load_modules_from_dir(&mut self, dir_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         for entry in std::fs::read_dir(dir_path)? {
@@ -1961,8 +2165,9 @@ impl VirtualMachine {
                     .and_then(|s| s.to_str())
                     .ok_or("Invalid file name")?
                     .to_string();
-
+                
                 let json_data = std::fs::read_to_string(&path)?;
+
                 let module: Bytecode = serde_json::from_str(&json_data)?;
 
                 let modules: &mut HashMap<String, Bytecode> = Arc::make_mut(&mut self.modules);
@@ -2334,11 +2539,14 @@ impl VirtualMachine {
         self.scopes.push(Arc::clone(&lambda.captures));
         self.scopes.push(Arc::new(parameters));
 
+        let bytecode_enums: HashMap<String, EnumOperandStructure> = self.vm_enums_to_bytecode();
+
         // Create a new bytecode chunk we can run
         let nested_bytecode = Bytecode {
             instructions: instructions.as_ref().clone(),
             tasks: self.task_definitions.clone(),
             coroutines: HashMap::new(),
+            enums: bytecode_enums
         };
         // Set prev instructions to the current active instructions!
         let previous_active_instructions = Arc::clone(&self.active_instructions);

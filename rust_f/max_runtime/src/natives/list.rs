@@ -661,6 +661,16 @@ fn value_to_string_via_seperator(value: &Value, seperator: &str) -> String {
 
             lambda.id.to_string()
         }
+        Value::EnumDefinition(enums) => {
+            let enum_members = &enums.enum_members;
+
+            let mapped: Vec<String> = enum_members.iter()
+                .map(|member| format!("{}", value_to_string_via_seperator(&Value::String(member.member_name.borrow().clone()), seperator)))
+                .collect();
+
+            mapped.join(seperator)
+        }
+        Value::EnumMember(member) => format!("{}.{}", member.enum_name.borrow().clone(), member.member_name.borrow().clone())
     };
 
     string

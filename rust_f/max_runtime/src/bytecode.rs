@@ -78,8 +78,8 @@ pub struct ForeachOperand {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct MemberAccessOperand {
-    pub target: String,
-    pub member: String
+    pub member_name: String,
+    pub access_type: String
 }
 
 
@@ -124,10 +124,16 @@ pub struct TaskCallOperand {
     pub is_member_access: bool
 }
 
-/// An structure to hold the components of an enum. Also serves as the operand
-#[derive(Debug, Deserialize)]
+
+// ------------------- \\
+// ------ ENUMS ------ \\
+// ------------------- \\
+
+
+/// A structure to hold the components of an enum. Also serves as the operand
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase")]
-pub struct EnumStructure {
+pub struct EnumOperandStructure {
     pub identifier: String,
     pub enum_members: HashMap<String, u64>
 }
@@ -261,4 +267,5 @@ pub struct Bytecode {
     pub instructions: Vec<Instruction>,
     pub tasks: HashMap<String, TaskInfo>,
     pub coroutines: HashMap<String, CoroutineInfo>,
+    pub enums: HashMap<String, EnumOperandStructure>
 }
