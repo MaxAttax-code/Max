@@ -726,9 +726,9 @@ public class Parser(List<Token> tokens)
     /// <param name="listingType">The resulting type that will be assigned</param>
     /// <returns>The listingType parameter, whether modified or not</returns>
     /// <exception cref="MaxTypeException"></exception>
-    private MaxType AttemptIterableTyping(MaxType type)
+    private MaxType AttemptIterableTyping(MaxType? type)
     {
-        return type switch
+        return (type is not null ? type : throw new MaxNilException("Expected a non null Maxtype to parse through AttemptIterableTyping()")) switch
         {
             ListType => ParseListType(),
             DictionaryType => ParseDictionaryType(),
@@ -1953,12 +1953,16 @@ public class Parser(List<Token> tokens)
     {
         var typeName = Consume().Value;
 
-        if (!TypeRegistry.Max_TypeNames.TryGetValue(typeName,  out MaxType? type))
+        if (TypeRegistry.Max_TypeNames.TryGetValue(typeName,  out MaxType? type))
         {
-            throw new MaxTypeException("Type assignment must use a real type.");
+            return AttemptIterableTyping(type);
+        }
+        else if (enumTypeRegistry.getEnums().TryGetValue(typeName, out EnumType? eType))
+        {
+            return AttemptIterableTyping(eType);
         }
 
-        return AttemptIterableTyping(type);
+        throw new MaxTypeException($"Type assignment must use a real type, got: {typeName}.");
     }
 
     private static IExpression ConvertBoolean(string boolean)

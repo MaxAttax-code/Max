@@ -51,17 +51,24 @@ export function activate(context: vscode.ExtensionContext) {
                 return new vscode.Hover(`**User-Defined ${taskKind}**: \`${word}\``);
             }
 
-            // 4. Check if the word is a keyword
+            // 4. Check if the word is a user-defined enum
+            const enumRegex = new RegExp(`\\benum\\s+${word}\\s+members`);
+            const enumMatch = enumRegex.exec(text);
+            if (enumMatch) {
+                return new vscode.Hover(`**User-defined Enum**: \`${word}\``);
+            }
+
+            // 5. Check if the word is a keyword
             if (keywords.includes(word)) {
                 return new vscode.Hover(`**Keyword**: \`${word}\`\n\n*Max language control or declaration keyword.*`);
             }
 
-            // 5. Check if the word is a built-in type
+            // 6. Check if the word is a built-in type
             if (types.includes(word)) {
                 return new vscode.Hover(`**Type Definition**: \`${word}\``);
             }
 
-            // 6. Check if the word is a built-in taskType
+            // 7. Check if the word is a built-in taskType
             if (taskTypes.includes(word)) {
                 return new vscode.Hover(`**Task Type Definition**: \`${word}\``);
             }
@@ -105,6 +112,10 @@ export function activate(context: vscode.ExtensionContext) {
                     fixes.push(this.createPlaceholderValueFix(document, diag));
                 }
 
+                if (msg.includes("in PascalCase")) {
+                    fixes.push(this.createPascalCaseFix(document, diag))
+                }
+
                 // Add more cases as we build more diagnostics
             }
 
@@ -117,6 +128,17 @@ export function activate(context: vscode.ExtensionContext) {
 
             const range = diag.range;
             fix.edit.replace(document.uri, range, "nil");
+
+            fix.diagnostics = [diag];
+            return fix;
+        }
+
+        private createPascalCaseFix(document: vscode.TextDocument, diag: vscode.Diagnostic) {
+            const fix = new vscode.CodeAction("Refactor identifier into PascalCase", vscode.CodeActionKind.QuickFix);
+            fix.edit = new vscode.WorkspaceEdit();
+
+            const range = diag.range;
+            fix.edit.replace(document.uri, range, toPascalCase(document.getText(range)));
 
             fix.diagnostics = [diag];
             return fix;
@@ -176,6 +198,70 @@ export function activate(context: vscode.ExtensionContext) {
         parameters: TaskParam[]
     }
 
+    interface EnumMember {
+        enumName: string,
+        memberName: string,
+        intValue: number
+    }
+
+    interface Enum {
+        name: string,
+        members: EnumMember[]
+    }
+
+    // ---------------------------- \\
+    // ---- CASING HELPER FUNCS --- \\
+    // ---------------------------- \\
+
+    // Keep in mind these funcs are outside runLint(), as they may also be used within Hover providers and CodeActions
+
+    /**
+     * Determines if a word follows PascalCase naming conventions
+     */
+    function isPascalCase(str: string): boolean {
+        if (!str || str.length === 0) {
+            return false;
+        }
+
+        // Check if the first character is an uppercase letter
+        // Sorry, but'd it basically be requiring a dictionary, if
+        // we were to check EVERY word is Uppercase
+        const firstChar = str[0];
+        if (firstChar !== firstChar.toUpperCase() || firstChar === firstChar.toLowerCase()) {
+            return false;
+        }
+
+        // Ensure it contains only alphanumeric characters (no spaces, underscores, or hyphens)
+        return /^[A-Za-z0-9]+$/.test(str);
+    }
+
+    /**
+     * Formats an identifier into PascalCase
+     * @returns The new string formatted in PascalCase
+     */
+    function toPascalCase(str: string): string {
+        if (!str) return "";
+
+        // If it already matches PascalCase, return it as-is
+        if (isPascalCase(str)) {
+            return str;
+        }
+
+        // Replace any non-alphanumeric character with a space,
+        // then split the string into words.
+        const words = str
+            .replace(/[^A-Za-z0-9]/g, " ")
+            .split(/\s+/)
+            .filter(Boolean); // Remove empty strings. Clean!
+
+        if (words.length === 0) return "";
+
+        // Capitalize the first letter of each word and join them together
+        return words
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join("");
+    }
+
     /**
      * This function gives us the error linting needed for Max.
      * @param document The text document to inspect
@@ -220,12 +306,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         /**
-         * Checks if a given name is one of the types in the types list.
+         * Checks if a given name is one of the types in the types list, or a valid enum type.
          * @param name The name to check
          * @returns True if the name is a type, else false
          */
         function isTypeName(name: string): boolean {
-            return types.includes(name);
+            // If a type or an enum name!
+            return types.includes(name) || (enumStack.find(s => s.name === name) !== undefined);
         }
 
         /**
@@ -242,7 +329,7 @@ export function activate(context: vscode.ExtensionContext) {
          * @param typeSpec The type name to check
          * @returns A boolean if the type is valid or not
          */
-        function parseType(typeSpec: string): boolean {
+        function parseIsValidType(typeSpec: string): boolean {
             typeSpec = typeSpec.trim();
 
             // A simple type
@@ -257,7 +344,7 @@ export function activate(context: vscode.ExtensionContext) {
                 const inner = longForm[2];
 
                 if (!isIterableTypeName(iterType)) return false;
-                return parseType(inner); // RECURSION. Super cool right?
+                return parseIsValidType(inner); // RECURSION. Super cool right?
             }
 
             // Short-form collection using the '<>' symbols
@@ -267,7 +354,7 @@ export function activate(context: vscode.ExtensionContext) {
                 const inner = shortForm[2];
 
                 if (!isIterableTypeName(iterType)) return false;
-                return parseType(inner);
+                return parseIsValidType(inner);
             }
 
             // 4. Anything else is invalid!
@@ -331,6 +418,18 @@ export function activate(context: vscode.ExtensionContext) {
             return parameters;
         }
 
+        /**
+         * Returns if a given string identifier is valid for naming
+         * @param identifier The string identifier to check
+         * @returns If the identifier is valid or not
+         */
+        function isValidIdentifier(identifier: string): boolean {
+            if (keywords.includes(identifier) || operators.includes(identifier) || taskTypes.includes(identifier)) {
+                return false;
+            }
+            return true;
+        }
+
         
         // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
         // |          SETUP           | \\
@@ -351,6 +450,15 @@ export function activate(context: vscode.ExtensionContext) {
         // Regex for a block start and end
         const blockRegex = /\b(then|do|members|conclude)\b/g;
 
+        /*
+            Regex to totally capture:
+            enum <name> members
+                memberName,
+                ...
+            conclude
+        */
+        const enumRegex = /\benum\b\s+([A-Za-z_][A-Za-z0-9_]*)\s+members\b([\s\S]*?)\bconclude\b/g;
+
         // Regex to capture: // <comment>
         const lineCommentRegex = /\/\/.*$/gm;
         // Creating an interface? Nah, just a list of line comments that are found
@@ -365,6 +473,7 @@ export function activate(context: vscode.ExtensionContext) {
         // Start with a stack of only one scope. This single scope should never be popped
         const scopeStack: Scope[] = [{ vars: [], startRange: new vscode.Range(document.positionAt(0), document.positionAt(text.length)) }];
         const taskStack: Task[] = [];
+        const enumStack: Enum[] = [];
 
         let match;
 
@@ -419,7 +528,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (/^\s*$/.test(blockContent)) {
                 diags.push(new vscode.Diagnostic(
                     new vscode.Range(document.positionAt(blockComment.startOffset), endPos),
-                    "Empty block comment detected — Is this on purpose? If so, add an underscore or period to remove this warning.",
+                    "Empty block comment detected — Is this on purpose? If so, add an underscore to remove this warning.",
                     vscode.DiagnosticSeverity.Information
                 ));
             }
@@ -429,6 +538,256 @@ export function activate(context: vscode.ExtensionContext) {
         // |‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾| \\
         // |      SYNTAX CHECKING     | \\
         // |__________________________| \\
+
+        // KEEP IN MIND THAT THE ORDER OF THESE REGEXES MATTER
+
+        // ---------------------------- \\
+        // ------ DEFINITION LAWS ----- \\
+        // ---------------------------- \\
+
+
+        while ((match = defineRegex.exec(text)) !== null) {
+            const fullMatch = match[0];
+            const taskTypeName = match[1];
+            const identifier = match[2];
+            const withClause = match[3]; // e.g. "with (x as int, y as int)" or undefined
+            const arrowClause = match[4] // e.g. "=>" or undefined
+            const returnType = match[5]; // e.g. "return int" or undefined
+
+            const startPos = document.positionAt(match.index);
+            const endPos = document.positionAt(match.length + fullMatch.length);
+
+            // ----------------------------
+            // 1. Validate the Identifier
+            // ----------------------------
+
+            if (!isValidIdentifier(identifier)) {
+                diags.push(new vscode.Diagnostic(
+                    new vscode.Range(startPos, endPos),
+                    `Invalid task definition name, cannot use ${identifier}`,
+                    vscode.DiagnosticSeverity.Error
+                ));
+                continue;
+            }
+
+            // ----------------------------
+            // 2. Validate the Task Type
+            // ----------------------------
+
+            let taskType: TaskType;
+
+            switch (taskTypeName) {
+                case "function": taskType = TaskType.function; break;
+                case "coroutine": taskType = TaskType.coroutine; break;
+
+                default: {
+                    diags.push(new vscode.Diagnostic(
+                        new vscode.Range(startPos, endPos),
+                        `Invalid Task Type given: ${taskTypeName}`,
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                    continue;
+                }
+            }
+
+            const clauses: string = `${withClause === undefined}:${arrowClause === undefined}`;
+
+            let params: TaskParam[] = [];
+
+            switch (clauses) {
+                // There is an arrow clause? Just break, there's no params!
+                case "true:false": {
+                    break;
+                }
+
+                // There is a with clause, so check params
+                case "false:true": {
+                    // Very nice positioning
+                    const withClauseIndex = match.index + match[0].indexOf(withClause);
+
+                    if (taskType == TaskType.coroutine) {
+                        diags.push(new vscode.Diagnostic(
+                            new vscode.Range(startPos, endPos),
+                            `Invalid Task Definition structure. A Coroutine cannot have any parameters.`,
+                            vscode.DiagnosticSeverity.Error
+                        ));
+                        continue;
+                    }
+
+                    params = parseTaskParameters(withClause, withClauseIndex);
+                    break
+                }
+
+                default: {
+                    diags.push(new vscode.Diagnostic(
+                        new vscode.Range(startPos, endPos),
+                        `Invalid Task Definition structure. Must have parameters or be parameterless.`,
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                    continue;
+                }
+            }
+
+            if (returnType !== undefined) {
+                if (!isTypeName(returnType)) {
+                    diags.push(new vscode.Diagnostic(
+                        new vscode.Range(startPos, endPos),
+                        `Invalid return type for task definition.`,
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                    continue;
+                }
+            }
+
+            taskStack.push({
+                name: identifier,
+                type: taskType,
+                parameters: params
+            })
+        }
+
+
+        // ---------------------------- \\
+        // -------- ENUM LAWS --------- \\
+        // ---------------------------- \\
+
+
+        while ((match = enumRegex.exec(text)) !== null) {
+            const fullCapt = match[0];
+            const enumName = match[1];
+            const membersCaptured = match[2];
+            
+            // Find where the members block starts inside the matched text
+            const membersCaptureIndex = match.index + fullCapt.indexOf(membersCaptured);
+
+            const enumStartPos = document.positionAt(match.index);
+            const enumEndPos = document.positionAt(match.index + fullCapt.length);
+            // A constant range to highlight the ENTIRE enum
+            const enumRange = new vscode.Range(enumStartPos, enumEndPos);
+            // Just the name
+            const enumNameIndex = match.index + fullCapt.indexOf(enumName);
+            const enumNameRange = new vscode.Range(document.positionAt(enumNameIndex), document.positionAt(enumNameIndex + enumName.length));
+
+            // ----------------------------
+            // 1. Validate the Enum Name
+            // ----------------------------
+
+            if (enumStack.find(e => e.name === enumName) !== undefined) {
+                // The same name was found? Not cool!
+                diags.push(new vscode.Diagnostic(
+                    enumNameRange,
+                    `Already defined Enum name: '${enumName}'`,
+                    vscode.DiagnosticSeverity.Error
+                ));
+            }
+
+            if (!isValidIdentifier(enumName)) {
+                diags.push(new vscode.Diagnostic(
+                    enumNameRange,
+                    `Invalid Enum name, must not be a Max-reserved word, got: '${enumName}'`,
+                    vscode.DiagnosticSeverity.Error
+                ));
+            }
+
+            // ----------------------------
+            // 2. Validate the Members
+            // ----------------------------
+
+            let finalMembers: EnumMember[] = [];
+            // All commas GONE
+            const members = membersCaptured.split(",");
+            let currentOffset = membersCaptureIndex;
+            let intValue = 0;
+
+            for (let rawMemberText of members) {
+                const trimmedMember = rawMemberText.trim();
+                
+                // Skip empty strings if there's a trailing comma
+                if (trimmedMember.length === 0) {
+                    // Doing this updates the offset for the linting 
+                    currentOffset += rawMemberText.length + 1;
+                    continue;
+                }
+
+                // Calculate exact document indices for this specific member
+                const memberStartIndex = currentOffset + rawMemberText.indexOf(trimmedMember);
+                const memberEndIndex = memberStartIndex + trimmedMember.length;
+
+                const memberRange = new vscode.Range(
+                    document.positionAt(memberStartIndex),
+                    document.positionAt(memberEndIndex)
+                );
+
+                // Validate using the member regex
+                // No \s+ since it should be trimmed!
+                if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmedMember)) {
+                    if (!isValidIdentifier(trimmedMember)) {
+                        diags.push(new vscode.Diagnostic(
+                            memberRange,
+                            `Enum member name must not be a Max-reserved word, got: '${trimmedMember}'`,
+                            vscode.DiagnosticSeverity.Error
+                        ));
+                    }
+
+                    // No duplicate member names!
+                    if (finalMembers.find(m => m.memberName === trimmedMember) !== undefined) {
+                        diags.push(new vscode.Diagnostic(
+                            memberRange,
+                            `Duplicate Enum member name: '${trimmedMember}'`,
+                            vscode.DiagnosticSeverity.Error
+                        ));
+                    }
+
+                    finalMembers.push({
+                        enumName,
+                        memberName: trimmedMember,
+                        intValue
+                    });
+                    // Bup! Alike values logic in actual compiler
+                    intValue++;
+                } else {
+                    // Highlights only the specific invalid member instead of the whole enum
+                    diags.push(new vscode.Diagnostic(
+                        memberRange,
+                        `Invalid Enum member name format: '${trimmedMember}'`,
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                }
+
+                // Advance the offset tracker past this member plus the comma (+1)
+                currentOffset += rawMemberText.length + 1;
+            }
+
+            // ----------------------------
+            // 3. Non-Error Touches
+            // ----------------------------
+
+            // An empty enum? That's marked as suspicious
+            if (finalMembers.length === 0) {
+                diags.push(new vscode.Diagnostic(
+                    enumRange,
+                    `Empty Enum found`,
+                    vscode.DiagnosticSeverity.Warning
+                ));
+            }
+
+            if (!isPascalCase(enumName)) {
+                diags.push(new vscode.Diagnostic(
+                    enumNameRange,
+                    `Enum identifier '${enumName}' should ideally be in PascalCase ('${toPascalCase(enumName)}')`,
+                    vscode.DiagnosticSeverity.Information
+                ));
+            }
+
+            // ----------------------------
+            // 4. Add to Stack
+            // ----------------------------
+
+            enumStack.push({
+                name: enumName,
+                members: finalMembers
+            });
+        }
 
 
         // ---------------------------- \\
@@ -501,7 +860,7 @@ export function activate(context: vscode.ExtensionContext) {
             // ----------------------------
 
             // No special stuff in there
-            if (keywords.includes(identifier) || taskTypes.includes(identifier)) {
+            if (!isValidIdentifier(identifier)) {
                 diags.push(new vscode.Diagnostic(
                     new vscode.Range(startPos, endPos),
                     `Invalid declaration name, cannot use ${identifier}`,
@@ -607,7 +966,7 @@ export function activate(context: vscode.ExtensionContext) {
 
             if (typeSpect !== undefined) {
                 // Check out `parseType` for more
-                if (!parseType(typeSpect)) {
+                if (!parseIsValidType(typeSpect)) {
                     diags.push(new vscode.Diagnostic(
                         new vscode.Range(startPos, endPos),
                         `Invalid type specification '${typeSpect}'.`,
@@ -662,112 +1021,6 @@ export function activate(context: vscode.ExtensionContext) {
             } else {
                 wanted.push(variable);
             }
-        }
-
-
-        // ---------------------------- \\
-        // ------ DEFINITION LAWS ----- \\
-        // ---------------------------- \\
-
-
-        while ((match = defineRegex.exec(text)) !== null) {
-            const fullMatch = match[0];
-            const taskTypeName = match[1];
-            const identifier = match[2];
-            const withClause = match[3]; // e.g. "with (x as int, y as int)" or undefined
-            const arrowClause = match[4] // e.g. "=>" or undefined
-            const returnType = match[5]; // e.g. "return int" or undefined
-
-            const startPos = document.positionAt(match.index);
-            const endPos = document.positionAt(match.length + fullMatch.length);
-
-            // ----------------------------
-            // 1. Validate the Identifier
-            // ----------------------------
-
-            if (keywords.includes(identifier) || taskTypes.includes(identifier)) {
-                diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    `Invalid task definition name, cannot use ${identifier}`,
-                    vscode.DiagnosticSeverity.Error
-                ));
-                continue;
-            }
-
-            // ----------------------------
-            // 2. Validate the Task Type
-            // ----------------------------
-
-            let taskType: TaskType;
-
-            switch (taskTypeName) {
-                case "function": taskType = TaskType.function; break;
-                case "coroutine": taskType = TaskType.coroutine; break;
-
-                default: {
-                    diags.push(new vscode.Diagnostic(
-                        new vscode.Range(startPos, endPos),
-                        `Invalid Task Type given: ${taskTypeName}`,
-                        vscode.DiagnosticSeverity.Error
-                    ));
-                    continue;
-                }
-            }
-
-            const clauses: string = `${withClause === undefined}:${arrowClause === undefined}`;
-
-            let params: TaskParam[] = [];
-
-            switch (clauses) {
-                // There is an arrow clause? Just break, there's no params!
-                case "true:false": {
-                    break;
-                }
-
-                // There is a with clause, so check params
-                case "false:true": {
-                    // Very nice positioning
-                    const withClauseIndex = match.index + match[0].indexOf(withClause);
-
-                    if (taskType == TaskType.coroutine) {
-                        diags.push(new vscode.Diagnostic(
-                            new vscode.Range(startPos, endPos),
-                            `Invalid Task Definition structure. A Coroutine cannot have any parameters.`,
-                            vscode.DiagnosticSeverity.Error
-                        ));
-                        continue;
-                    }
-
-                    params = parseTaskParameters(withClause, withClauseIndex);
-                    break
-                }
-
-                default: {
-                    diags.push(new vscode.Diagnostic(
-                        new vscode.Range(startPos, endPos),
-                        `Invalid Task Definition structure. Must have parameters or be parameterless.`,
-                        vscode.DiagnosticSeverity.Error
-                    ));
-                    continue;
-                }
-            }
-
-            if (returnType !== undefined) {
-                if (!isTypeName(returnType)) {
-                    diags.push(new vscode.Diagnostic(
-                        new vscode.Range(startPos, endPos),
-                        `Invalid return type for task definition.`,
-                        vscode.DiagnosticSeverity.Error
-                    ));
-                    continue;
-                }
-            }
-
-            taskStack.push({
-                name: identifier,
-                type: taskType,
-                parameters: params
-            })
         }
 
 

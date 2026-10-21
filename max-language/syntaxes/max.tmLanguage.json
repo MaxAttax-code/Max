@@ -15,6 +15,9 @@
             "include": "#definitions"
         },
         {
+            "include": "#enums"
+        },
+        {
             "include": "#imports"
         },
         {
@@ -57,7 +60,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.max",
-                    "match": "\\b(if|then|elif|else|conclude|while|for|foreach|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield|using|enum|members)\\b"
+                    "match": "\\b(if|then|elif|else|conclude|while|for|foreach|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield|using)\\b"
                 }
             ]
         },
@@ -77,7 +80,7 @@
                     "name": "storage.modifier.max"
                 },
                 {
-                    "match": "\\b(as)\\b",
+                    "match": "\\b(as|of)\\b",
                     "captures": {
                         "1": {
                             "name": "keyword.control.max"
@@ -148,6 +151,30 @@
                 {
                     "match": "\\b(int|float|string|boolean|list|dictionary)\\b",
                     "name": "storage.type.max"
+                }
+            ]
+        },
+
+        "enums": {
+            "name": "meta.enum.max",
+            "begin": "\\b(enum)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+            "beginCaptures": {
+                "1": {
+                    "name": "keyword.declaration.max"
+                },
+                "2": {
+                    "name": "entity.name.type.enum.max"
+                }
+            },
+            "end": "(?=\\bconclude\\b)",
+            "patterns": [
+                {
+                    "match": "\\bmembers\\b",
+                    "name": "keyword.control.max"
+                },
+                {
+                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+                    "name": "variable.other.enummember"
                 }
             ]
         },
