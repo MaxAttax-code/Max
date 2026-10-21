@@ -1278,9 +1278,12 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
         ValidateEnumMembers(statement.Identifier, statement.EnumMembers);
 
-        bytecode.Enums.Add(statement.Identifier, new EnumerationOperand(statement.Identifier, statement.EnumMembers));
+        // Constructs the members to be sent to serialisation (this includes sub members, see BuildMembers())
+        List<EnumMember> finalMembers = BuildMembers(statement.Identifier, [], statement.EnumMembers);
 
-        bytecode.Instructions.Add(new Instruction(OpCode.DefineEnum, new EnumerationOperand(statement.Identifier, statement.EnumMembers)));
+        bytecode.Enums.Add(statement.Identifier, new EnumerationOperand(statement.Identifier, finalMembers));
+
+        bytecode.Instructions.Add(new Instruction(OpCode.DefineEnum, new EnumerationOperand(statement.Identifier, finalMembers)));
     }
 
     /// <summary>
