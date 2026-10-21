@@ -61,6 +61,9 @@ namespace Max
         Minus,
         Multiply,
         Divide,
+        /// <summary>
+        /// Aka the percentage sign, '%'
+        /// </summary>
         Modulus,
 
         PlusEqual,
@@ -73,6 +76,10 @@ namespace Max
         Dot,
         Semicolon,
         Colon,
+        /// <summary>
+        /// Aka the Dollar Sign, '$'
+        /// </summary>
+        Subform,
         Not,
         And,
         Or,
@@ -90,6 +97,9 @@ namespace Max
         Greater,
         GreaterEqual,
 
+        /// <summary>
+        /// Aka an Equals sign followed by Greater than, '=>'
+        /// </summary>
         EvaluateTo,
         LineComment,
         BlockCommentStart,

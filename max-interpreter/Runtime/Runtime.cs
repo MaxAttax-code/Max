@@ -175,11 +175,11 @@ namespace Max
         public object? Value { get; } = value;
     }
 
-    public class EnumStructure(string identifier, Dictionary<string, int> enumMembers)
-    {
-        public string Identifier { get; } = identifier;
-        public Dictionary<string, int> EnumMembers { get; } = enumMembers;
-    }
+    /// <summary>
+    /// Defines what kind of enum node we are referencing
+    /// </summary>
+    public enum EnumNodeKind { Definition, Member }
+    public readonly record struct EnumNode(EnumNodeKind Kind, string Path, IReadOnlyList<EnumMember> Children);
 
     public interface IIterable
     {

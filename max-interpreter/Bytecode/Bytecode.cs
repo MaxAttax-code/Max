@@ -24,7 +24,7 @@ namespace Max
         /// <summary>
         /// The enums the bytecode holds
         /// </summary>
-        public Dictionary<string, EnumStructure> Enums { get; } = [];
+        public Dictionary<string, EnumerationOperand> Enums { get; } = [];
 
         // Creating the options as a reusable instance is less performance-heavt
         private static readonly JsonSerializerOptions bytecodeExportOptions = new()

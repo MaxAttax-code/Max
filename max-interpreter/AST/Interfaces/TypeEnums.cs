@@ -52,6 +52,7 @@ namespace Max
     {
         Module,
         Enum,
+        EnumMember,
 
         None // Represents that there should be no member accessing
     }

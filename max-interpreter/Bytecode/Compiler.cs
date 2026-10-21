@@ -1273,41 +1273,32 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
     private void CompileEnumerator(EnumeratorStatement statement)
     {
-        // As a dictionary, so that the JSON can parse it
-        Dictionary<string, int> members = [];
-
-        foreach (EnumMember member in statement.EnumMembers)
-        {
-            if (!members.TryAdd(member.Name, member.Enumerable))
-            {
-                throw new MaxSyntaxException(
-                    $"Duplicate enum member found '{member.Name}'"
-                );
-            }
-        }
-
-        EnumerationOperand operand = new(
-            statement.Identifier,
-            members
-        );
-
         if (HasDuplicateNaming(statement.Identifier))
-        {
             throw new MaxEnumException($"Duplicate naming found when attempting to create enum '{statement.Identifier}'");
+
+        ValidateEnumMembers(statement.Identifier, statement.EnumMembers);
+
+        bytecode.Enums.Add(statement.Identifier, new EnumerationOperand(statement.Identifier, statement.EnumMembers));
+
+        bytecode.Instructions.Add(new Instruction(OpCode.DefineEnum, new EnumerationOperand(statement.Identifier, statement.EnumMembers)));
+    }
+
+    /// <summary>
+    /// Validates that all the members within an enum are uniqur. Erring if a duplicate member name was found.
+    /// </summary>
+    /// <param name="path">The enum path to resolve and check. Only needed for extra debugging material</param>
+    /// <param name="members">The members to resolve</param>
+    /// <exception cref="MaxSyntaxException"></exception>
+    private static void ValidateEnumMembers(string path, List<EnumMember> members)
+    {
+        HashSet<string> seen = [];
+        foreach (EnumMember member in members)
+        {
+            if (!seen.Add(member.Name))
+                throw new MaxSyntaxException($"Duplicate enum member found '{member.Name}' in '{path}'");
+
+            ValidateEnumMembers($"{path}.{member.Name}", member.SubMembers);
         }
-
-        // As a structure so that the JSON serialises the enum members as a dictionary
-        EnumStructure structure = new(
-            statement.Identifier,
-            statement.EnumMembers.ToDictionary(
-                m => m.Name,
-                m => m.Enumerable
-            )
-        );
-
-        bytecode.Enums.Add(statement.Identifier, structure);
-
-        bytecode.Instructions.Add(new Instruction(OpCode.DefineEnum, operand));
     }
 
     #endregion
@@ -1441,57 +1432,105 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
     private MemberAccessType ResolveMemberAccessType(MemberAccessExpression expression)
     {
-        // This process is surprisingly complex. Let's take it in steps
+        // Resolve in steps:
 
-        // 1. If the target is a variable reference (e.g., Direction.North or math.PI)
-        if (expression.Target is VariableReference varRef)
+        // 1. Is the target an enum definition or an enum member?
+        if (ResolveEnumNode(expression.Target) is EnumNode node)
         {
-            string name = varRef.Name;
-            
-            if (!IsVariableDeclared(name))
-            {
-                if (bytecode.Enums.TryGetValue(name, out _))
-                {
-                    return MemberAccessType.Enum;
-                }
+            if (!node.Children.Any(m => m.Name == expression.Member))
+                throw new MaxEnumException($"'{expression.Member}' is not a member of '{node.Path}'");
 
-                if (symbolsTable.TryGetValue(name, out _))
-                {
-                    return MemberAccessType.Module;
-                }
-            }
-        }
-        
-        // 2. If the target is another member access (e.g., map.Direction in map.Direction.North)
-        else if (expression.Target is MemberAccessExpression nestedTarget)
-        {
-            // Check local enums first
-            if (bytecode.Enums.TryGetValue(nestedTarget.Member, out _))
-            {
-                return MemberAccessType.Enum;
-            }
-
-            // Check if the nested target's root is a module, and if the member is an Enum type
-            // (Assuming your module symbol table tracks types or you can check if it's an enum)
-            if (nestedTarget.Target is VariableReference modVar && symbolsTable.TryGetValue(modVar.Name, out var symbolTbl))
-            {
-                // If the symbol table contains the member and it represents an enum
-                if (symbolTbl.Contents.TryGetValue(nestedTarget.Member, out _))
-                {
-                    // If it's an enum, return Enum access type
-                    return MemberAccessType.Enum;
-                }
-            }
-
-            // Otherwise, simply return a module type
-            if (symbolsTable.TryGetValue(nestedTarget.Member, out _))
-            {
-                return MemberAccessType.Module;
-            }
+            return node.Kind == EnumNodeKind.Definition ? MemberAccessType.Enum : MemberAccessType.EnumMember;
         }
 
-        // Default to instance property access
+        // 2. Module access (math.PI, map.Direction)
+        if (expression.Target is VariableReference v && !IsVariableDeclared(v.Name) && symbolsTable.ContainsKey(v.Name))
+            return MemberAccessType.Module;
+
+        // 3. A member access through a module via MemberAccessExpression
+        if (expression.Target is MemberAccessExpression nested && symbolsTable.ContainsKey(nested.Member))
+            return MemberAccessType.Module;
+
+        // 4. No member accessing found at all
         return MemberAccessType.None;
+    }
+
+    /// <summary>
+    /// Finds the members of an enum name. Whether local or in dependency modules.
+    /// </summary>
+    /// <param name="name">The name to check for</param>
+    /// <returns>The list of Enum members associated with the enum, otherwise null</returns>
+    private List<EnumMember>? FindEnumMembers(string name)
+    {
+        // If the enums already
+        if (bytecode.Enums.TryGetValue(name, out EnumerationOperand? local))
+            return local.EnumMembers;
+
+        foreach (string dep in dependencies)
+        {
+            if (symbolsTable.TryGetValue(dep, out SymbolTable? table)
+                && table.Contents.TryGetValue(name, out InfoRecord? info)
+                && info is EnumInfo enumInfo)
+                return enumInfo.EnumMembers;
+        }
+        return null;
+    }
+
+    /// <summary>Obtains a member's children (its inline sub-members, or the members of the enum it references)</summary>
+    /// <param name="member">The Enum member to get the sub members of</param>
+    private List<EnumMember> GetSubMembers(EnumMember member)
+    {
+        // Just return the sub members if no reference
+        if (member.SubEnumReference is null) return member.SubMembers;
+
+        // Otherwise, find the referenced enum's members
+        return FindEnumMembers(member.SubEnumReference) ?? throw new MaxEnumException($"Sub enum '{member.SubEnumReference}' referenced by '{member.Name}' was not found");
+    }
+
+    /// <summary>
+    /// Resolves what kind of Enum Node is to be referenced.
+    /// </summary>
+    /// <param name="expression">The expression to extract and find if it resolves to an enum member or definition</param>
+    /// <returns>The NodeKind resolved, else null</returns>
+    /// <exception cref="MaxEnumException"></exception>
+    private EnumNode? ResolveEnumNode(IExpression expression)
+    {
+        switch (expression)
+        {
+            // Raw: enum
+            case VariableReference variable when !IsVariableDeclared(variable.Name):
+            {
+                List<EnumMember>? members = FindEnumMembers(variable.Name);
+                // In this case, we are only referencing the enum, so we the NodeKind of Definition (refs an enum definition)
+                return members is null ? null : new EnumNode(EnumNodeKind.Definition, variable.Name, members);
+            }
+
+            case MemberAccessExpression access:
+            {
+                // Module-qualified enum: i.e. module.enum
+                if (access.Target is VariableReference module && !IsVariableDeclared(module.Name)
+                    && symbolsTable.TryGetValue(module.Name, out SymbolTable? table)
+                    && table.Contents.TryGetValue(access.Member, out InfoRecord? info)
+                    && info is EnumInfo enumInfo)
+                {
+                    return new EnumNode(EnumNodeKind.Definition, $"{module.Name}.{access.Member}", enumInfo.EnumMembers);
+                }
+
+                // Otherwise: resolve the parent, then exactly ONE step into it
+                // Do this as a member from a module-resolved enum is always module.enum.member
+                EnumNode? parent = ResolveEnumNode(access.Target);
+                if (parent is null) return null;
+
+                // Now finally get the (found) child from the children of the enum resolved
+                EnumMember child = parent.Value.Children.FirstOrDefault(m => m.Name == access.Member)
+                    ?? throw new MaxEnumException($"'{access.Member}' is not a member of '{parent.Value.Path}'");
+
+                return new EnumNode(EnumNodeKind.Member, $"{parent.Value.Path}.{child.Name}", GetSubMembers(child));
+            }
+
+            default:
+                return null;
+        }
     }
 
     #endregion

@@ -100,5 +100,5 @@ namespace Max
     /// </summary>
     /// <param name="Identifier">The name to store under</param>
     /// <param name="EnumMembers">The members to pass through, with their names and value</param>
-    public record EnumerationOperand(string Identifier, Dictionary<string, int> EnumMembers);
+    public record EnumerationOperand(string Identifier, List<EnumMember> EnumMembers);
 }
