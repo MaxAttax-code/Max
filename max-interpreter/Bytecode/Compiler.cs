@@ -1284,6 +1284,38 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
     }
 
     /// <summary>
+    /// Builds the members out of an enum name, and the path to the parent of the enum members to be built.
+    /// </summary>
+    /// <param name="enumName">The primary, top-level declared enum identifier of the enum</param>
+    /// <param name="parentPath">The path to the enum member that parents the sub-members, if any</param>
+    /// <param name="members">The members to build</param>
+    /// <returns>The list of Enum members. Each member has their sub members built in too</returns>
+    /// <exception cref="MaxSyntaxException"></exception>
+    private static List<EnumMember> BuildMembers(string enumName, List<string> parentPath, List<EnumMember> members)
+    {
+        HashSet<string> seen = [];
+        List<EnumMember> built = [];
+
+        foreach (EnumMember m in members)
+        {
+            if (!seen.Add(m.Name))
+                throw new MaxSyntaxException($"Duplicate enum member found '{m.Name}' in '{enumName}'");
+
+            // Creates a new path
+            List<string> path = [.. parentPath, m.Name];
+            built.Add(m with
+            {
+                EnumName = enumName,
+                Path = path,
+                // Recursively builds submembers from members
+                // The new 'path' also means sub members belong underneath this current member
+                SubMembers = BuildMembers(enumName, path, m.SubMembers)
+            });
+        }
+        return built;
+    }
+
+    /// <summary>
     /// Validates that all the members within an enum are uniqur. Erring if a duplicate member name was found.
     /// </summary>
     /// <param name="path">The enum path to resolve and check. Only needed for extra debugging material</param>
