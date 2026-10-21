@@ -1841,40 +1841,51 @@ public class Parser(List<Token> tokens)
         List<EnumMember> enumMembers = [];
         int enumerable = 0;
 
-        // Concluded already?
         if (Match(TokenType.ConcludeStatement))
         {
-            // Empty, as it is correctly assumed nothing was declared inbetween
-            return [];
+            Advance(); // Simply return the members
+            return enumMembers;
         }
 
         do
         {
             string enumName = Consume(TokenType.Identifier).Value;
-            
-            EnumMember member = new(enumName, enumerable);
-            
-            // As simple as pi!
-            enumMembers.Add(member);
-            enumerable++;
-            
-            if (Match(TokenType.ConcludeStatement))
-            {
-                break;
-            }
-            // Also require commas between enumns if not ending 
-            else if (Match(TokenType.Comma))
+
+            List<EnumMember> subMembers = [];
+            string? subEnumReference = null;
+
+            if (Match(TokenType.Subform))
             {
                 Advance();
-            } else
-            {
-                throw new MaxSyntaxException("Expected a comma between enum members or a conclude statement in enum definition");
+
+                if (Match(TokenType.Members))
+                {
+                    Advance();
+                    subMembers = ParseEnumMembers(); // Recursion handles deeper nesting (Sub-members)
+                }
+                else
+                {
+                    // Don't validate here: the referenced enum may be defined later or in another module
+                    subEnumReference = Consume(TokenType.Identifier).Value;
+                }
             }
+
+            // Add to the list, with sub members and enum reference included
+            enumMembers.Add(new EnumMember(enumName, enumerable)
+            {
+                SubMembers = subMembers,
+                SubEnumReference = subEnumReference
+            });
+            enumerable++;
+
+            // Check each possible situation
+            if (Match(TokenType.ConcludeStatement)) break;
+            else if (Match(TokenType.Comma)) Advance();
+            else throw new MaxSyntaxException("Expected a comma between enum members or a conclude statement in enum definition");
         }
         while (!Match(TokenType.ConcludeStatement));
 
         Consume(TokenType.ConcludeStatement);
-
         return enumMembers;
     }
 

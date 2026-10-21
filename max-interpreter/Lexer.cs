@@ -220,6 +220,14 @@ namespace Max
                         position++;
                         break;
 
+                    case '$':
+                        tokens.Add(new Token(
+                            TokenType.Subform,
+                            "$"
+                        ));
+                        position++;
+                        break;
+
                     default:
                         Console.WriteLine(
                             $"Unknown character: {character}"
