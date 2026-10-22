@@ -347,8 +347,8 @@ pub fn format_to_string(val: Value) -> String {
         Value::Coroutine(coroutine) => format!("{:#?}", coroutine.borrow()),
         Value::Lambda(lambda) => format!("lambda#{}", lambda.definition.id),
 
-        Value::EnumDefinition(enums) => format!("{}: {:#?}", enums.enum_name.borrow(), enums.enum_members),
-        Value::EnumMember(memb) => format!("{}.{}", memb.enum_name.borrow(), memb.member_name.borrow()),
+        Value::EnumDefinition(enums) => format!("{}: {:#?}", enums.identifier, enums.enum_members),
+        Value::EnumMember(memb) => format!("{}", memb.full_name()),
 
         Value::Nil => format!("nil"),
     }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::{cell::RefCell, rc::Rc};
 
 use serde::Deserialize;
@@ -130,12 +131,46 @@ pub struct TaskCallOperand {
 // ------------------- \\
 
 
-/// A structure to hold the components of an enum. Also serves as the operand
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+/// A single enum member, exactly as the compiler emits it.
+/// Used by the VM at runtime as well, so no conversion is needed.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct EnumOperandStructure {
+pub struct EnumMember {
+    // So many fields, gotta keep track of them all
+    /// The direct name of the enum member, unique to it's members category
+    pub name: String,
+    /// The enumeration value given
+    pub enumerable: i64,
+    /// The primary, top-level enum this belongs to
+    pub enum_name: String,
+    /// The path to this enum, includes going through other members to reach a sub-member
+    pub path: Vec<String>,
+    #[serde(default)]
+    /// The sub members this enum splits into
+    pub sub_members: Vec<EnumMember>,
+    #[serde(default)]
+    /// A reference to another enum that this member is sub-split into.
+    /// Keep in mind that if this is not **None**, `sub_members` must be an empty vector
+    pub sub_enum_reference: Option<String>,
+}
+
+impl EnumMember {
+    /// The Enum name attached with the path to this member
+    pub fn full_name(&self) -> String {
+        format!("{}.{}", self.enum_name, self.path.join("."))
+    }
+
+    /// Same enum *and* same route inside it. Deliberately ignores `enumerable` and sub-members
+    pub fn is_same_member(&self, other: &EnumMember) -> bool {
+        self.enum_name == other.enum_name && self.path == other.path
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct EnumStructure {
     pub identifier: String,
-    pub enum_members: HashMap<String, u64>
+    pub enum_members: Vec<EnumMember>,
 }
 
 
@@ -267,5 +302,5 @@ pub struct Bytecode {
     pub instructions: Vec<Instruction>,
     pub tasks: HashMap<String, TaskInfo>,
     pub coroutines: HashMap<String, CoroutineInfo>,
-    pub enums: HashMap<String, EnumOperandStructure>
+    pub enums: Arc<HashMap<String, EnumStructure>>
 }

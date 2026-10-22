@@ -665,12 +665,12 @@ fn value_to_string_via_seperator(value: &Value, seperator: &str) -> String {
             let enum_members = &enums.enum_members;
 
             let mapped: Vec<String> = enum_members.iter()
-                .map(|member| format!("{}", value_to_string_via_seperator(&Value::String(member.member_name.borrow().clone()), seperator)))
+                .map(|member| format!("{}", value_to_string_via_seperator(&Value::String(member.enum_name.clone()), seperator)))
                 .collect();
 
             mapped.join(seperator)
         }
-        Value::EnumMember(member) => format!("{}.{}", member.enum_name.borrow().clone(), member.member_name.borrow().clone())
+        Value::EnumMember(member) => format!("{}", member.full_name())
     };
 
     string

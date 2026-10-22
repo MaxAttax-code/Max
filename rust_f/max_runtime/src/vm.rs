@@ -57,93 +57,6 @@ pub struct DictionaryValue {
     pub values: Vec<Value>,
 }
 
-/**
-A structure to hold the actual Enum within an EnumDefinition Values.
-Enum members are held not only with their integer-backed values, but their identification as well
-*/
-#[derive(Debug, Clone, PartialEq)]
-pub struct EnumStructure {
-    // We will borrow it a lot, so it's nicer to use an RC rather than cloning
-    pub enum_name: Rc<RefCell<String>>,
-    pub enum_members: Vec<EnumMember>
-}
-
-impl EnumStructure {
-    pub fn new(enum_name: String, enum_members: Vec<EnumMember>) -> Self {
-        EnumStructure {
-            enum_name: Rc::new(RefCell::new(enum_name)),
-            enum_members
-        }
-    }
-
-    /**
-    Converts an EnumOperandStructure into an EnumStructure.
-    Keep in mind this must clone the identifier name and the member name for each member in the Structure.
-    This function also consumes the operand given, meaning you cannot use it afterwards.
-
-    ### Example
-
-    ```
-    # use crate::vm::EnumOperandStructure
-    # use crate::vm::EnumStructure
-    
-    let enum_members = Hashmap::new();
-    enum_members.insert("e1", 0);
-    enum_members.insert("e2", 1);
-    enum_members.insert("e3", 2);
-
-    let enum_operand = EnumOperandStructure {
-        identifier: "Example",
-        enum_members
-    };
-
-    let enum_struct: EnumStructure = EnumStructure::operand_to_struct(enum_operand.clone());
-
-    assert_ne!(enum_operand, enum_struct)
-    assert_eq!(enum_struct.enum_name, enum_operand.identifier);
-    ```
-    */
-    pub fn operand_to_struct(enum_operand: EnumOperandStructure) -> EnumStructure {
-        let name = enum_operand.identifier.clone();
-        let mut members: Vec<EnumMember> = vec![];
-
-        for member in enum_operand.enum_members {
-            let new_member: EnumMember = EnumMember::new(enum_operand.identifier.clone(), member.0, Value::Integer(member.1 as i64));
-            members.push(new_member);
-        }
-
-        EnumStructure::new(name, members)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct EnumMember {
-    pub enum_name: Rc<RefCell<String>>,
-    pub member_name: Rc<RefCell<String>>,
-    pub value: Box<Value>
-}
-
-impl EnumMember {
-    pub fn new(enum_name: String, member_name: String, value: Value) -> EnumMember {
-        EnumMember {
-            enum_name: Rc::new(RefCell::new(enum_name)),
-            member_name: Rc::new(RefCell::new(member_name)),
-            value: Box::new(value)
-        }
-    }
-
-    pub fn hashmap_to_vecof(enum_name: String, enum_hashmap: HashMap<String, u64>) -> Vec<EnumMember> {
-        let mut enum_members: Vec<EnumMember> = vec![];
-        for member in enum_hashmap {
-            let new_member: EnumMember = EnumMember::new(enum_name.clone(), member.0, Value::Integer(member.1 as i64));
-            enum_members.push(new_member);
-        }
-
-        enum_members
-    }
-}
-
-
 /// A special handle containing a possible signal for a possible value
 pub type PossibleHandle = Rc<RefCell<PossibleSignal>>;
 
@@ -210,8 +123,8 @@ impl fmt::Display for Value {
             Value::Coroutine(coroutine) => write!(f, "{:#?}", coroutine.borrow()),
             Value::Lambda(lambda) => write!(f, "lambda#{}", lambda.definition.id),
 
-            Value::EnumDefinition(enums) => write!(f, "{}: {:#?}", enums.enum_name.borrow(), enums.enum_members),
-            Value::EnumMember(memb) => write!(f, "{}.{}", memb.enum_name.borrow(), memb.member_name.borrow()),
+            Value::EnumDefinition(enums) => write!(f, "{}: {:#?}", enums.identifier, enums.enum_members),
+            Value::EnumMember(memb) => write!(f, "{}", memb.full_name()),
 
             Value::Nil => write!(f, "nil"),
         }
@@ -321,7 +234,8 @@ impl Value {
             (Value::Coroutine(co1), Value::Coroutine(co2)) => Value::Boolean(Rc::ptr_eq(co1, co2)),
             (Value::Lambda(lambda1), Value::Lambda(lambda2)) => Value::Boolean(lambda1.definition.id == lambda2.definition.id),
 
-            (Value::EnumDefinition(enum1), Value::EnumDefinition(enum2)) => Value::Boolean(enum1.enum_name == enum2.enum_name),
+            (Value::EnumDefinition(enum1), Value::EnumDefinition(enum2)) => Value::Boolean(enum1.identifier == enum2.identifier),
+            (Value::EnumMember(mem1), Value::EnumMember(mem2)) => Value::Boolean(mem1.is_same_member(mem2)),
 
             _ => Value::Boolean(false),
         }
@@ -440,8 +354,8 @@ impl Value {
             Value::Coroutine(..) => Some("CoroutineType".into()),
             Value::Lambda(..) => Some("LambdaType".into()),
 
-            Value::EnumDefinition(enums) => Some("EnumType-".to_string() + &enums.enum_name.borrow()),
-            Value::EnumMember(memb) => Some(memb.enum_name.borrow().clone()),
+            Value::EnumDefinition(enums) => Some("EnumType-".to_string() + &enums.identifier),
+            Value::EnumMember(memb) => Some(memb.enum_name.clone()),
 
             Value::Nil => None
         }
@@ -469,8 +383,8 @@ impl Value {
             // Keep in mind that the lambdas arity is kept within it's definition (metadata)
             Value::Lambda(lambda) => MaxType::TaskType(lambda.definition.arity as usize),
 
-            Value::EnumDefinition(enums) => MaxType::EnumType(enums.enum_name.borrow().clone()),
-            Value::EnumMember(memb) => MaxType::EnumType(memb.enum_name.borrow().clone()),
+            Value::EnumDefinition(enums) => MaxType::EnumType(enums.identifier.clone()),
+            Value::EnumMember(memb) => MaxType::EnumType(memb.enum_name.clone()),
 
             Value::Nil => MaxType::NoType
         }
@@ -711,8 +625,8 @@ impl MaxType {
                 false
             },
 
-            (MaxType::EnumType(t), Value::EnumDefinition(e)) => t == &e.enum_name.borrow().clone(),
-            (MaxType::EnumType(t), Value::EnumMember(mem)) => t == &mem.enum_name.borrow().clone(),
+            (MaxType::EnumType(t), Value::EnumDefinition(e)) => t == &e.identifier,
+            (MaxType::EnumType(t), Value::EnumMember(mem)) => t == &mem.enum_name,
 
             // These two are special!
             (MaxType::NoType, _) => true,
@@ -982,7 +896,7 @@ pub struct VirtualMachine {
     task_definitions: HashMap<String, TaskInfo>,
     modules: Arc<HashMap<String, Bytecode>>,
     module_name: String,
-    enums: HashMap<String, EnumStructure>,
+    enums: Arc<HashMap<String, EnumStructure>>,
 
     /// A collector for the dependencies the current possible handles hold
     dependency_collector: Option<Rc<RefCell<HashSet<DependencyKey>>>>,
@@ -1004,7 +918,7 @@ impl VirtualMachine {
             task_definitions: HashMap::new(),
             modules: Arc::new(HashMap::new()),
             module_name: String::new(),
-            enums: HashMap::new(),
+            enums: Arc::new(HashMap::new()),
             dependency_collector: None,
             dependency_subscribers: HashMap::new(),
             evaluating_possible: HashSet::new(),
@@ -1138,12 +1052,14 @@ impl VirtualMachine {
 
                 "DefineEnum" => {
                     if let Some(operand_json) = &instr.operand {
-                        let enum_info: EnumOperandStructure = serde_json::from_value(operand_json.clone())
+                        let enum_info: EnumStructure = serde_json::from_value(operand_json.clone())
                             .expect("Invalid Define-Enum operand format");
+
+                        let bound = enum_info.identifier.clone();
 
                         // Push in the new enum
                         // Ye that's it
-                        self.enums.insert(enum_info.identifier.clone(), EnumStructure::operand_to_struct(enum_info));
+                        Arc::make_mut(&mut self.enums).insert(bound, enum_info);
                     }
                 }
 
@@ -1189,8 +1105,8 @@ impl VirtualMachine {
                                 // Look up the imported module
                                 if let Some(module_bytecode) = self.modules.get(&module_name) {
                                     // Check if the member is an enum inside this module
-                                    if let Some(enum_info) = module_bytecode.enums.get(&operand.member_name) {
-                                        let enum_def = Value::EnumDefinition(EnumStructure::operand_to_struct(enum_info.clone()));
+                                    if let Some(enum_info) = module_bytecode.enums.get(&operand.member_name).cloned() {
+                                        let enum_def = Value::EnumDefinition(enum_info);
                                         
                                         // Now, push the resolved EnumDefinition onto the stack!
                                         self.stack.push(enum_def);
@@ -1227,11 +1143,34 @@ impl VirtualMachine {
                                 };
 
                                 // Look up the specific member (e.g., "North") inside the enum
-                                let member_value = enum_struct.enum_members.into_iter().find(|mem| mem.member_name.borrow().clone() == operand.member_name)
-                                    .unwrap_or_else(|| panic!("[IP {:04}] No member found for enum '{}' by the name '{}'", ip, enum_struct.enum_name.borrow(), operand.member_name));
+                                if let Some(member_value) =
+                                    enum_struct.enum_members.into_iter().find(|mem| mem.name == operand.member_name)
+                                {
+                                    // Push the final resolved enum member value onto the stack
+                                    self.stack.push(Value::EnumMember(member_value));
+                                }
+                                else {
+                                    panic!("[IP {:04}] No member found for enum '{}' by the name '{}'", ip, enum_struct.identifier, operand.member_name)
+                                }
+                            }
 
-                                // Finalllyyyyy, push the final resolved enum member value onto the stack
-                                self.stack.push(Value::EnumMember(member_value));
+                            "EnumMember" => {
+                                let target_val = self.stack.pop().unwrap_or(Value::Nil);
+                                // Get the parent. It MUST be an EnumMember... for obvious reasons
+                                let parent = match target_val {
+                                    Value::EnumMember(m) => m,
+                                    _ => panic!("[IP {:04}] Expected an enum member on the stack, got {:?}", ip, target_val),
+                                };
+
+                                // Now get the sub-member
+                                let child = self.find_sub_member(&parent, &operand.member_name)
+                                    .unwrap_or_else(|| panic!(
+                                        "[IP {:04}] '{}' has no sub member '{}'",
+                                        ip, parent.full_name(), operand.member_name
+                                    ));
+
+                                // Push!!!
+                                self.stack.push(Value::EnumMember(child));
                             }
 
                             _ => {
@@ -1394,8 +1333,8 @@ impl VirtualMachine {
 
                             let mut found: Option<(&String, &EnumStructure)> = None;
 
-                            for enumerator in &self.enums {
-                                if name == &enumerator.1.enum_name.borrow().clone() {
+                            for enumerator in self.enums.iter() {
+                                if name == &enumerator.1.identifier {
                                     found = Some(enumerator);
                                 }
                             }
@@ -1923,7 +1862,7 @@ impl VirtualMachine {
                         if let Some(task) = self.task_definitions.get(&call.name).cloned() {
                             // Transform the runtime VM enums into the serializable bytecode operand structure
                             // Perhaps a little extra but oh well
-                            let bytecode_enums: HashMap<String, EnumOperandStructure> = self.vm_enums_to_bytecode();
+                            let bytecode_enums: Arc<HashMap<String, EnumStructure>> = self.enums.clone();
 
                             let current_bytecode = Bytecode {
                                 instructions: (*active_instructions).clone(),
@@ -2121,37 +2060,6 @@ impl VirtualMachine {
      ------------------------
     */
 
-    pub fn vm_enums_to_bytecode(&self) -> HashMap<String, EnumOperandStructure> {
-        // Transform the runtime VM enums into the serializable bytecode operand structure
-        // Perhaps a little extra but oh well
-        let bytecode_enums: HashMap<String, EnumOperandStructure> = self.enums
-            .iter()
-            .map(|(name, structure)| {
-                // Convert Vec<EnumMember> back into a HashMap<String, i64>
-                let members_map = structure.enum_members
-                    .iter()
-                    .map(|m| {
-                        let int_val = match *m.value {
-                            Value::Integer(i) => i as u64,
-                            _ => 0,
-                        };
-                        (m.member_name.borrow().clone(), int_val)
-                    })
-                    .collect();
-
-                (
-                    name.clone(),
-                    EnumOperandStructure {
-                        identifier: structure.enum_name.borrow().clone(),
-                        enum_members: members_map,
-                    },
-                )
-            })
-            .collect();
-
-        bytecode_enums
-    }
-
     /// Loads all JSON files inside a given directory into the VM module map
     pub fn load_modules_from_dir(&mut self, dir_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         for entry in std::fs::read_dir(dir_path)? {
@@ -2205,6 +2113,44 @@ impl VirtualMachine {
         }
 
         None
+    }
+
+    /// Finds a direct child of `parent`: either an inline sub member,
+    /// or a member of the enum that `parent` references (`Tool $ ToolTypes`).
+    /// 
+    /// ### Example
+    /// ```
+    /// # use crate::vm::VirtualMachine;
+    /// # let VM = VirtualMachine::new(..);
+    /// # let primary = EnumDefinition { .. };
+    /// 
+    /// // In context of a "Primary" enum being defined
+    /// let secondary_enum = EnumMember {
+    ///     ..
+    ///     sub_members: vec![..]; // Includes a 'Tertiary' sub-member,
+    ///     sub_enum_
+    /// };
+    /// 
+    /// let tertiary_enum = VM.find_sub_member(&secondary_enum, "Tertiary").expect("Invalid example format");
+    /// 
+    /// assert_eq!("Tertiary", tertiary_enum.name);
+    /// assert_eq!("Primary.Secondary.Tertiary", tertiary_enum.full_name());
+    /// ```
+    fn find_sub_member(&self, parent: &EnumMember, name: &str) -> Option<EnumMember> {
+        // We just got sub members? Then simply search through the enum's sub-members
+        // This looks simple, but I promise it wasn't easy to make
+        if let Some(found) = parent.sub_members.iter().find(|m| m.name == name) {
+            return Some(found.clone());
+        }
+
+        // Derefs the name, seeing if it is defined
+        let reference = parent.sub_enum_reference.as_deref()?;
+
+        // Defined in this module at runtime, otherwise search the loaded modules
+        let target = self.enums.get(reference)
+            .or_else(|| self.modules.values().find_map(|b| b.enums.get(reference)))?;
+
+        target.enum_members.iter().find(|m| m.name == name).cloned()
     }
 
     pub fn eval_comparison(operation: &str, left: Value, right: Value) -> Value {
@@ -2539,7 +2485,7 @@ impl VirtualMachine {
         self.scopes.push(Arc::clone(&lambda.captures));
         self.scopes.push(Arc::new(parameters));
 
-        let bytecode_enums: HashMap<String, EnumOperandStructure> = self.vm_enums_to_bytecode();
+        let bytecode_enums: Arc<HashMap<String, EnumStructure>> = self.enums.clone();
 
         // Create a new bytecode chunk we can run
         let nested_bytecode = Bytecode {
