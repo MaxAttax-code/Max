@@ -20,7 +20,9 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
     /// <summary>
     /// A value to represent the next ID that can be taken by a lambda
     /// </summary>
-    private int nextLambdaID;
+    private static int nextLambdaID;
+
+    public static void ResetLambdaIds() => nextLambdaID = 0;
 
     /// <summary>
     /// Names declared in the compiler scopes.
@@ -376,6 +378,11 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
             taskDepth = 1,
         };
 
+        // Share the data
+        foreach (var (name, info) in bytecode.Enums) lambdaCompiler.bytecode.Enums[name] = info;
+        foreach (var (name, info) in bytecode.Tasks) lambdaCompiler.bytecode.Tasks[name] = info;
+        foreach (var (name, info) in bytecode.Coroutines) lambdaCompiler.bytecode.Coroutines[name] = info;
+
         // For each variable found, input into the lambda
         foreach (var dict in variableScopes) {
             foreach ((string name, GlobalVariableInfo? type) in dict)
@@ -433,6 +440,7 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
             // We find this via Load, Update, UpdateIndex or Lambda (all which contain variables that may be capturable)
             IEnumerable<string> references = instruction switch
             {
+                // Keep a sharp eye that 'Load' also applies to Enums and Modules
                 { OpCode: OpCode.Load, Operand: string variableName } => [variableName],
                 { OpCode: OpCode.Update, Operand: UpdateOperand update } => [update.Name],
                 { OpCode: OpCode.UpdateIndex, Operand: UpdateIndexOperand { TargetName: not null } update } => [update.TargetName],
@@ -442,21 +450,32 @@ public class Compiler(NativeRegistry nativeRegistry, Dictionary<string, SymbolTa
 
             foreach (string name in references)
             {
-                if (!localNames.Contains(name) && !captured.Contains(name))
+                // If not already contained, and is a variable name (not a compile-time name)
+                if (!localNames.Contains(name) && !captured.Contains(name) && !IsCompileTimeName(name))
                 {
                     captured.Add(name);
                 }
             }
         }
 
+        // Claim and increase the ID count. Meaning Lambdas start from ID 0
+        int lambdaID = nextLambdaID++;
+
         bytecode.Instructions.Add(new Instruction(
             OpCode.Lambda,
-            new LambdaOperand(nextLambdaID, expression.Parameters.Count, expression.Parameters, captured, chunk)
+            new LambdaOperand(lambdaID, expression.Parameters.Count, expression.Parameters, captured, chunk)
         ));
-
-        // Increase the ID count. Meaning Lambdas start from ID 0
-        nextLambdaID++;
     }
+
+    /// <summary>
+    /// Checks if a name given is only a Compile-Time name, referencing a module or enum.
+    /// This should be placed to check after a 'Load' OpCode inside a lambda in order to prevent adding modules or enums to the captured variables list.
+    /// </summary>
+    /// <param name="name">The name to check.</param>
+    /// <returns></returns>
+    private bool IsCompileTimeName(string name) =>
+        !IsVariableDeclared(name) &&
+        (bytecode.Enums.ContainsKey(name) || FindEnumMembers(name) is not null || symbolsTable.ContainsKey(name));
 
     /// <summary>
     /// Helper function that searches through the given list of IStatements for a Return Statement.
