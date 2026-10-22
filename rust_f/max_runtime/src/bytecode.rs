@@ -295,12 +295,13 @@ pub struct Instruction {
     pub operand: Option<serde_json::Value>
 }
 
-/// The Bytecode object that contains all instructions, tasks, etc..., for the VM to read
+/// The Bytecode object that contains all instructions, tasks, etc..., for the VM to read.
+/// All fields are wrapped in Arcs in order to allow easy cloning from Bytecode to Bytecode.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct Bytecode {
-    pub instructions: Vec<Instruction>,
-    pub tasks: HashMap<String, TaskInfo>,
-    pub coroutines: HashMap<String, CoroutineInfo>,
+    pub instructions: Arc<Vec<Instruction>>,
+    pub tasks: Arc<HashMap<String, TaskInfo>>,
+    pub coroutines: Arc<HashMap<String, CoroutineInfo>>,
     pub enums: Arc<HashMap<String, EnumStructure>>
 }

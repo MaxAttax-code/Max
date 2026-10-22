@@ -893,10 +893,11 @@ pub struct VirtualMachine {
 
     pub active_instructions: Arc<Vec<Instruction>>,
 
-    task_definitions: HashMap<String, TaskInfo>,
+    task_definitions: Arc<HashMap<String, TaskInfo>>,
     modules: Arc<HashMap<String, Bytecode>>,
     module_name: String,
     enums: Arc<HashMap<String, EnumStructure>>,
+    lambda_cache: HashMap<u64, Arc<LambdaOperand>>,
 
     /// A collector for the dependencies the current possible handles hold
     dependency_collector: Option<Rc<RefCell<HashSet<DependencyKey>>>>,
@@ -910,15 +911,16 @@ impl VirtualMachine {
     pub fn new() -> Self {
         Self {
             stack: Vec::new(),
-            scopes: vec![Arc::new(HashMap::new())],
+            scopes: vec![Arc::default()],
             temporaries: HashMap::new(),
             call_stack: vec![],
             native_registry: NativeRegistry::new(),
-            active_instructions: Arc::new(vec![]),
-            task_definitions: HashMap::new(),
-            modules: Arc::new(HashMap::new()),
+            active_instructions: Arc::default(),
+            task_definitions: Arc::default(),
+            modules: Arc::default(),
             module_name: String::new(),
-            enums: Arc::new(HashMap::new()),
+            enums: Arc::default(),
+            lambda_cache: HashMap::new(),
             dependency_collector: None,
             dependency_subscribers: HashMap::new(),
             evaluating_possible: HashSet::new(),
@@ -947,9 +949,9 @@ impl VirtualMachine {
     fn run_chunk(&mut self, module_name: String, bytecode: Bytecode, print_completion: bool) {
         self.module_name = module_name;
 
-        self.task_definitions = bytecode.tasks.clone(); // Give ourselves the current tasks defined
+        self.task_definitions = Arc::clone(&bytecode.tasks); // Give ourselves the current tasks defined
         // The main instructions that were given to us by the json
-        let main_instructions = Arc::new(bytecode.instructions.clone());
+        let main_instructions = Arc::clone(&bytecode.instructions);
 
         /*
             The active instructions that are currently being executed.
@@ -1063,13 +1065,29 @@ impl VirtualMachine {
                     }
                 }
 
+                // field: lambda_cache: HashMap<u64, Arc<LambdaOperand>>
+
                 "Lambda" => {
                     if let Some(operand_json) = &instr.operand {
-                        // Get the operand...
-                        let lambda: LambdaOperand = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid LambdaOperand attached to Lambda Instruction");
+                        let id = operand_json.get("ID").and_then(|v| v.as_u64())
+                            .expect("Lambda operand is missing its ID");
+
+                        // Very nicely get the lambda found from the VM Hashmap
+                        // Inserting a new lambda into the cache if it doesn't already exist
+                        let definition = match self.lambda_cache.get(&id) {
+                            Some(cached) => Arc::clone(cached),
+                            None => {
+                                let parsed: Arc<LambdaOperand> = Arc::new(
+                                    LambdaOperand::deserialize(operand_json)
+                                        .expect("Invalid LambdaOperand attached to Lambda Instruction"));
+                                self.lambda_cache.insert(id, Arc::clone(&parsed));
+                                parsed
+                            }
+                        };
+
                         let mut captures = HashMap::new();
-                        for name in &lambda.captured {
+                        // Input them captures!
+                        for name in &definition.captured {
                             let entry = self.scopes.iter().rev().find_map(|scope| scope.get(name));
                             if let Some(entry) = entry {
                                 captures.insert(name.clone(), entry.clone());
@@ -1078,12 +1096,11 @@ impl VirtualMachine {
                             }
                         }
 
-                        let lambda_arc: Arc<LambdaOperand> = Arc::new(lambda);
-                        let captures_arc: Arc<HashMap<String, VariableEntry>> = Arc::new(captures);
-
-                        self.stack.push(Value::Lambda(RuntimeLambda { definition: lambda_arc, captures: captures_arc }));
-                    } else {
-                        panic!("[IP {:04}] Operand for Lambda is required.", ip);
+                        // Push, as always
+                        self.stack.push(Value::Lambda(RuntimeLambda {
+                            definition,
+                            captures: Arc::new(captures),
+                        }));
                     }
                 }
 
@@ -1816,7 +1833,7 @@ impl VirtualMachine {
 
                             // We set the current ACTIVE instructions as the lambda chunks instructions
                             // Keep in mind that when the lambda is finished, the instructions return to the normal bytecode!
-                            active_instructions = Arc::clone(&definition.chunk.instructions);
+                            active_instructions = definition.chunk.instructions.clone();
                             self.active_instructions = Arc::clone(&active_instructions);
                             ip = 0;
 
@@ -1825,20 +1842,15 @@ impl VirtualMachine {
                         
                         // Calling a user defined task via a module name
                         if let Some(ref target_module_name) = call.target {
-                            let target_bytecode = self.modules.get(target_module_name).cloned();
-
-                            if let Some(bytecode) = target_bytecode {
-                                if let Some(task) = bytecode.tasks.get(&call.name).cloned() {
-                                    self.invoke_task(
-                                        task,
-                                        target_module_name,
-                                        &bytecode,
-                                        call.argument_count,
-                                        &mut ip,
-                                        &mut active_instructions,
-                                    );
-                                    continue;
-                                }
+                            if let Some(task) = bytecode.tasks.get(&call.name).cloned() {
+                                self.invoke_task(
+                                    task,
+                                    target_module_name,
+                                    call.argument_count,
+                                    &mut ip,
+                                    &mut active_instructions,
+                                );
+                                continue;
                             }
 
                             // Fallback to Native Module Call if target isn't a user module or task wasn't found
@@ -1860,21 +1872,9 @@ impl VirtualMachine {
 
                         // Local Task in the same file
                         if let Some(task) = self.task_definitions.get(&call.name).cloned() {
-                            // Transform the runtime VM enums into the serializable bytecode operand structure
-                            // Perhaps a little extra but oh well
-                            let bytecode_enums: Arc<HashMap<String, EnumStructure>> = self.enums.clone();
-
-                            let current_bytecode = Bytecode {
-                                instructions: (*active_instructions).clone(),
-                                tasks: self.task_definitions.clone(),
-                                coroutines: HashMap::new(),
-                                enums: bytecode_enums
-                            };
-
-                            self.invoke_task(
+                            self.invoke_task( 
                                 task,
                                 &self.module_name.to_string(),
-                                &current_bytecode,
                                 call.argument_count,
                                 &mut ip,
                                 &mut active_instructions
@@ -2485,14 +2485,12 @@ impl VirtualMachine {
         self.scopes.push(Arc::clone(&lambda.captures));
         self.scopes.push(Arc::new(parameters));
 
-        let bytecode_enums: Arc<HashMap<String, EnumStructure>> = self.enums.clone();
-
         // Create a new bytecode chunk we can run
         let nested_bytecode = Bytecode {
-            instructions: instructions.as_ref().clone(),
-            tasks: self.task_definitions.clone(),
-            coroutines: HashMap::new(),
-            enums: bytecode_enums
+            instructions: Arc::clone(&instructions),
+            tasks: Arc::clone(&self.task_definitions),
+            coroutines: Arc::default(),
+            enums: Arc::clone(&self.enums)
         };
         // Set prev instructions to the current active instructions!
         let previous_active_instructions = Arc::clone(&self.active_instructions);
@@ -2901,7 +2899,7 @@ impl VirtualMachine {
             *instructions = frame.return_instructions;
             self.active_instructions = Arc::clone(instructions);
             if let Some(caller_bytecode) = self.modules.get(&frame.module_name) {
-                self.task_definitions = caller_bytecode.tasks.clone();
+                self.task_definitions = Arc::clone(&caller_bytecode.tasks);
             }
 
             // Restore the module
@@ -3073,8 +3071,7 @@ impl VirtualMachine {
     pub fn invoke_task(
         &mut self,
         task: TaskInfo,
-        current_module_name: &str,
-        target_bytecode: &Bytecode,
+        module_name: &str,
         argument_count: u64,
         ip: &mut usize,
         active_instructions: &mut Arc<Vec<Instruction>>,
@@ -3114,6 +3111,11 @@ impl VirtualMachine {
             );
         }
 
+        // Get the bytecode of the modules to look for.
+        // This is cleaner than having to pass in the bytecode as a param
+        let target = self.modules.get(module_name).cloned()
+            .unwrap_or_else(|| panic!("Module '{}' not found", module_name));
+
         // Record callframe pointing to caller's module/instructions
         self.call_stack.push(CallFrame {
             task_info: Some(task.clone()),
@@ -3128,11 +3130,11 @@ impl VirtualMachine {
         self.scopes.push(Arc::new(call_scope));
 
         // Update VM task definitions to match target module
-        self.module_name = current_module_name.to_string();
-        self.task_definitions = target_bytecode.tasks.clone();
+        self.module_name = module_name.to_string();
+        self.task_definitions = Arc::clone(&target.tasks);
 
         // Switch instruction stream to the target module's instructions
-        *active_instructions = Arc::new(target_bytecode.instructions.clone());
+        *active_instructions = Arc::clone(&target.instructions);
         self.active_instructions = Arc::clone(active_instructions);
 
         // Jump instruction pointer to task entry point
@@ -3193,10 +3195,10 @@ impl VirtualMachine {
 
                 // Reset back to norms!
                 self.module_name = target_module_name;
-                self.task_definitions = target_bytecode.tasks.clone();
+                self.task_definitions = Arc::clone(&target_bytecode.tasks);
 
                 *ip = coroutine.instruction_point as usize;
-                *active_instr = Arc::new(target_bytecode.instructions.clone());
+                *active_instr = Arc::clone(&target_bytecode.instructions);
 
                 self.active_instructions = Arc::clone(active_instr);
 
