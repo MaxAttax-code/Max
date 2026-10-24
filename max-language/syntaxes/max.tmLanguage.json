@@ -173,6 +173,17 @@
                     "name": "keyword.control.max"
                 },
                 {
+                    "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\$\\s*([A-Za-z_][A-Za-z0-9_]*)$\\b",
+                    "captures": {
+                        "1": {
+                            "name": "variable.other.enummember"
+                        },
+                        "2": {
+                            "name": "entity.name.type.enum.max"
+                        }
+                    }
+                },
+                {
                     "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
                     "name": "variable.other.enummember"
                 }
