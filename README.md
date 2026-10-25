@@ -12,4 +12,4 @@ We would love to intake any requests or issues on the language in order to help 
 
 ***
 
-Feel free to experiment with the code. There is no licensing required for you to utilise the code. However, please do not share this or plagiarise the source code as your own, make sure to include this link as a reference.
+Feel free to experiment with the code. There is no licensing required for you to utilise the code. However, please do not share this or plagiarise the source code as your own, make sure to include this page's link as a reference.
