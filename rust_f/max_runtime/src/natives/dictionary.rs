@@ -1,4 +1,5 @@
-use crate::{natives::{NativeRegistry, ParamSpec}, vm::{MaxType::*, Value, VirtualMachine}};
+use crate::{natives::{NativeRegistry, ParamSpec}, vm::{VirtualMachine, Value}};
+use max_bytecode::MaxType::*;
 use super::{NativeTask, NativeProperty, NativeTarget};
 
 
@@ -164,7 +165,7 @@ pub fn dictionary_add(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     let mut dict = dict.borrow_mut();
 
     // Determine if a valid key type is being given
-    if !DictionaryType(None, None).valid_dictkey_value(key) {
+    if !DictionaryType(None, None).valid_dictkey_type(&key.get_type()) {
         panic!("Invalid key type given to add to dictionary: {}", key.get_runtime_typename().unwrap_or(String::from("NoType")))
     }
 

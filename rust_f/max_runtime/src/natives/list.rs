@@ -1,4 +1,5 @@
-use crate::{natives::{NativeProperty, NativeRegistry, ParamSpec}, vm::{MaxType::{self, *}, Value, VirtualMachine}};
+use crate::{natives::{NativeRegistry, NativeProperty, ParamSpec}, vm::{VirtualMachine, Value}};
+use max_bytecode::MaxType::{self, *};
 use super::{NativeTask, NativeTarget};
 
 
@@ -233,7 +234,7 @@ pub fn list_add(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     if let Some(element_type) = &list.element_type {
         let expected = MaxType::string_name_to_max(element_type);
 
-        MaxType::ensure_compatibility(&expected, item);
+        VirtualMachine::ensure_compatibility(&expected, item);
     }
 
     // Simply push to the list, as it is a Mutable reference, so it automatically changes for us without having to reassign anything!
@@ -262,7 +263,7 @@ pub fn list_add_range(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
         if let Some(element_type) = &list.element_type {
             let expected = MaxType::string_name_to_max(element_type);
 
-            MaxType::ensure_compatibility(&expected, &element);
+            VirtualMachine::ensure_compatibility(&expected, &element);
         }
 
         list.items.push(element);
@@ -285,7 +286,7 @@ pub fn list_concatenate(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
         let expected = MaxType::string_name_to_max(element_type);
 
         for item in &appendable.items {
-            MaxType::ensure_compatibility(&expected, item);
+            VirtualMachine::ensure_compatibility(&expected, item);
         }
     }
 
@@ -311,7 +312,7 @@ pub fn list_combine(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
         let expected = MaxType::string_name_to_max(element_type);
 
         for item in &appendable.items {
-            MaxType::ensure_compatibility(&expected, item);
+            VirtualMachine::ensure_compatibility(&expected, item);
         }
     }
 
@@ -344,7 +345,7 @@ pub fn list_insert(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     if let Some(element_type) = &list.element_type {
         let expected = MaxType::string_name_to_max(element_type);
 
-        MaxType::ensure_compatibility(&expected, item);
+        VirtualMachine::ensure_compatibility(&expected, item);
     }
 
     list.items.insert(*index as usize, item.clone());

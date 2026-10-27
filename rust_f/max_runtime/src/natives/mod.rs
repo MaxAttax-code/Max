@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{natives::{export::{NativeModuleSpec, NativeRegistrySpec, NativeTaskSpec}}, vm::{MaxType, Value, VirtualMachine}};
+use crate::vm::{Value, VirtualMachine};
+use max_bytecode::MaxType;
 
 // ----- NATIVE MODS ----- \\
 
@@ -14,8 +15,6 @@ pub mod list;
 pub mod dictionary;
 
 pub mod globals;
-
-pub mod export; // The mod that allows us to export the natives as JSON
 
 // ----------------------- \\
 
@@ -163,7 +162,7 @@ impl NativeTask {
 
         // Return Type Validation if needed
         if let Some(expected_return) = &self.return_type {
-            if !MaxType::check_value_compatibility(expected_return, &result) {
+            if !VirtualMachine::check_value_compatibility(expected_return, &result) {
                 panic!(
                     "Native task '{}' returned incompatible type {:?}, expected {:?}",
                     self.name, result, expected_return
@@ -262,7 +261,7 @@ impl NativeProperty {
     }
 
     pub fn get(&self, vm: &mut VirtualMachine, target: Value) -> Value {
-        if !MaxType::check_value_compatibility(&self.self_argument, &target) {
+        if !VirtualMachine::check_value_compatibility(&self.self_argument, &target) {
             panic!("Property '{}' target mismatch: expected {:?}, got {:?}",
                     self.name, self.self_argument, target);
         }
@@ -309,68 +308,6 @@ impl NativeRegistry {
         registry
     }
 
-    /// Exports all functions and properties within the registry into JSON
-    pub fn export_spec(&self) -> NativeRegistrySpec {
-        let mut modules_map: HashMap<String, Vec<NativeTaskSpec>> = HashMap::new();
-        let mut global_tasks: Vec<NativeTaskSpec> = Vec::new(); // These are just plain tasks roaming around without any library/module
-
-        for key in self.native_functions.keys() {
-            if let Some((module, func_name)) = key.split_once('.') {
-                // When the target is included
-                modules_map.entry(module.to_string()).or_default()
-                    .push(NativeTaskSpec 
-                            {
-                                name: func_name.to_string(),
-                                is_property: false
-                            }
-                        );
-            }
-            // Only the name
-            else {
-                global_tasks.push(NativeTaskSpec
-                    {
-                        name: key.clone(),
-                        is_property: false
-                    }
-                );
-            }
-        }
-
-        // Now we move onto properties
-        for key in self.native_properties.keys() {
-            if let Some((module, prop_name)) = key.split_once('.') {
-                modules_map.entry(module.to_string()).or_default()
-                    .push(NativeTaskSpec
-                        {
-                            name: prop_name.to_string(),
-                            is_property: true
-                        }
-                    );
-            }
-            else {
-                global_tasks.push(NativeTaskSpec
-                    {
-                        name: key.clone(),
-                        is_property: false
-                    }
-                );
-            }
-        }
-
-        // Now we put it all together!
-        let static_modules: Vec<NativeModuleSpec> = modules_map.into_iter()
-            .map(|(mod_name, tasks)| NativeModuleSpec {
-                name: mod_name,
-                tasks
-            })
-            .collect();
-
-        NativeRegistrySpec {
-            static_modules,
-            global_tasks
-        }
-    }
-
     /// Registers a native function within the registry so it can be called
     pub fn register_task(&mut self, target: NativeTarget, func: NativeTask) {
         let target_str = match target {
@@ -400,11 +337,6 @@ impl NativeRegistry {
         self.native_properties.insert(Self::get_key(target_str, &getter.name), getter);
     }
 
-    /// Checks if a target name is a valid static module
-    // pub fn is_static_module(&self, target: &str) -> bool {
-    //     self.static_modules.contains(target)
-    // }
-
     /// Attempts to get a task of the target and name.
     /// This returns the function responsible for the task.
     pub fn attempt_get_task(&self, target: Option<&str>, name: &str) -> Option<&NativeTask> {
@@ -427,6 +359,22 @@ impl NativeRegistry {
         }
 
         None
+    }
+
+    /// Gets the `static_modules_names` HashSet by cloning `static_modules`
+    pub fn static_module_names(&self) -> HashSet<String> {
+        self.static_modules.clone()
+    }
+
+    /// Gets the `global_task_names` HashSet by filtering all of `native_functions`,
+    /// searching only for functions without a member access
+    pub fn global_task_names(&self) -> HashSet<String> {
+        self.native_functions
+            .keys()
+            .chain(self.native_properties.keys())
+            .filter(|key| !key.contains('.'))
+            .cloned()
+            .collect()
     }
 
     /// Simply checks if a given string is a static module name

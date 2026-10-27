@@ -1,14 +1,11 @@
-use serde::{Deserialize, Deserializer};
-use serde::de::{self, MapAccess, Visitor};
-
-use crate::vm::MaxType::{DictionaryType};
-use crate::{bytecode::*, vm::{Value::List}};
+use max_bytecode::*;
 use crate::natives::NativeRegistry;
 use std::sync::Arc;
 use std::{cell::RefCell, rc::Rc};
 use std::{panic};
 use std::{collections::{HashMap, HashSet}, fmt::{self}, vec};
 use std::rc::Weak;
+
 
 /*
     -------------------
@@ -30,6 +27,28 @@ pub enum Value {
     EnumMember(EnumMember), // An enum member alone
     Possible(PossibleHandle),
     Nil
+}
+
+/// A structure that holds a Variable Entry contained with the scopes of the Virtual Machine
+/// Includes, the value as well as the type or resort value if considered
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariableEntry {
+    /// The value is stored within an Rc smart pointer. Please keep that in mind.
+    pub value: std::rc::Rc<std::cell::RefCell<Value>>,
+    pub modifiers: Modifiers,
+    pub max_type: Option<MaxType>,
+    pub resort_value: Option<ConstValue>,
+}
+
+impl VariableEntry {
+    pub fn new(nvalue: Value, modifiers: Modifiers, typing: Option<MaxType>, resortable: Option<ConstValue>) -> Self {
+        Self {
+            value: Rc::new(RefCell::new(nvalue)),
+            modifiers: modifiers,
+            max_type: typing,
+            resort_value: resortable
+        }
+    }
 }
 
 /// A special structure that a Lambda value holds.
@@ -78,6 +97,74 @@ pub struct PossibleSignal {
     pub current: Option<bool>,
     condition: Option<RuntimeLambda>,
     dependencies: HashSet<DependencyKey>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExecutionState {
+    Idle,
+    Running,
+    Paused,
+    Dead
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoroutineInstance {
+    pub execution_state: ExecutionState,
+    pub return_type: Option<MaxType>,
+
+    /// Where the coroutine currently is. Starts at it's entry point.
+    pub instruction_point: u64,
+
+    /// Where the coroutine will start. Never changes
+    pub entry_point: u64,
+
+    /// The scopes the coroutine has travelled through.
+    /// When the coroutine resumes, it begins from the last saved scope in this list
+    pub saved_scopes: Option<Vec<std::sync::Arc<HashMap<String, VariableEntry>>>>,
+
+    pub module_name: String
+}
+
+/// A type that holds an Rc Reference to a Coroutine Instance
+/// This allows the coroutine to be borrowed and shared rather than cloned
+pub type CoroutineHandle = Rc<RefCell<CoroutineInstance>>;
+
+impl CoroutineInstance {
+    /// Runs the coroutine. Call this function only when this coroutine is Paused or Idle
+    pub fn run(&mut self) {
+        self.execution_state = ExecutionState::Running;
+    }
+
+    /// Pauses the coroutine. Call this function only when this coroutine is Running
+    pub fn pause(&mut self) {
+        self.execution_state = ExecutionState::Paused;
+    }
+
+    /// Cancels the coroutine, putting it into Idle.
+    /// Call this function only when this coroutine is Running or Paused
+    pub fn cancel(&mut self) {
+        self.execution_state = ExecutionState::Idle;
+    }
+
+    /// Kills the current coroutine, rendering it a dead instance.
+    /// This function can be called whenever.
+    pub fn terminate(&mut self) {
+        self.execution_state = ExecutionState::Dead;
+    }
+}
+
+// Default values for a coroutine instance
+impl Default for CoroutineInstance {
+    fn default() -> Self {
+        Self {
+            execution_state: ExecutionState::Idle,
+            return_type: None,
+            instruction_point: 0,
+            entry_point: 0,
+            saved_scopes: None,
+            module_name: String::new()
+        }
+    }
 }
 
 impl fmt::Display for Value {
@@ -156,6 +243,34 @@ impl Value {
         }
     }
 
+    /// Some(true/false) when known, None for a possible that is still unresolved
+    fn truth_value(&self) -> Option<bool> {
+        match self {
+            Value::Boolean(b) => Some(*b),
+            Value::Possible(p) => p.borrow().current,
+            Value::Nil => Some(false),
+            other => panic!("'and' and 'or' only work on boolean values, got {}", other),
+        }
+    }
+
+    /// Performs the logic AND gate on two values
+    pub fn logical_and(left: &Value, right: &Value) -> Value {
+        match (left.truth_value(), right.truth_value()) {
+            (Some(false), _) | (_, Some(false)) => Value::Boolean(false),
+            (Some(true), Some(true)) => Value::Boolean(true),
+            _ => Value::new_possible(),
+        }
+    }
+
+    /// Performs the logic OR gate on two valuess
+    pub fn logical_or(left: &Value, right: &Value) -> Value {
+        match (left.truth_value(), right.truth_value()) {
+            (Some(true), _) | (_, Some(true)) => Value::Boolean(true),
+            (Some(false), Some(false)) => Value::Boolean(false),
+            _ => Value::new_possible(),
+        }
+    }
+
     /// Helper function to quickly create a list value containing a reference of the given arguments.
     pub fn new_list(element_type: Option<String>, items: Vec<Value>) -> Self {
         Value::List(Rc::new(RefCell::new(ListValue { element_type, items })))
@@ -182,6 +297,39 @@ impl Value {
     pub fn compare_valuetypes(&self, other: &Value) -> bool {
         // Simply check if they are of the same value type (NOT THE VALUES INSIDE!)
         std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
+    /// Intakes an `&ConstValue` to read and output a valid `Value`
+    pub fn from_const(const_val: &ConstValue) -> Value {
+        match const_val {
+            ConstValue::Str(s) => Value::String(s.clone()),
+            ConstValue::Integer(i) => Value::Integer(*i),
+            ConstValue::Float(f) => Value::Float(*f),
+            ConstValue::Boolean(b) => Value::Boolean(*b),
+            ConstValue::Possible => Value::new_possible(),
+            ConstValue::Nil => Value::Nil,
+            ConstValue::List(l) => Value::new_list(
+                None,
+                l.iter().map(|c|
+                    Value::from_const(c)
+                )
+                .collect::<Vec<Value>>()
+            ),
+            ConstValue::Dictionary(d) => {
+                // A lil' process to extract keys and values
+                let (keys, values): (Vec<Value>, Vec<Value>) = d.iter().map(
+                    |(k, v)| (Value::from_const(k), Value::from_const(v))
+                ).collect();
+                
+                Value::new_dictionary(
+                    None,
+                    None,
+                    None,
+                    keys,
+                    values,
+                )
+            }
+        }
     }
 
     /// Evaluates equality ("==") matching the three valued logic of Boolean-Likes as well
@@ -284,7 +432,7 @@ impl Value {
     }
 
     /// Relational operators (>, >=, <, <=) with Possible propagation
-    pub fn evaluate_relational(&self, op: &str, other: &Value) -> Value {
+    pub fn evaluate_relational(&self, op: &CompareOp, other: &Value) -> Value {
         // I don't know, possible is pretty weird ay?
         if let Some(value) = self.resolved_possible() {
             return Value::Boolean(value).evaluate_relational(op, other);
@@ -300,31 +448,31 @@ impl Value {
         let is_true = match (self, other) {
             // Integer and float comparisons are handled together as well!
             (Value::Integer(a), Value::Integer(b)) => match op {
-                ">" => a > b,
-                ">=" => a >= b,
-                "<" => a < b,
-                "<=" => a <= b,
+                CompareOp::Greater => a > b,
+                CompareOp::GreaterEqual => a >= b,
+                CompareOp::Lesser => a < b,
+                CompareOp::LesserEqual => a <= b,
                 _ => false,
             },
             (Value::Float(a), Value::Float(b)) => match op {
-                ">" => a > b,
-                ">=" => a >= b,
-                "<" => a < b,
-                "<=" => a <= b,
+                CompareOp::Greater => a > b,
+                CompareOp::GreaterEqual => a >= b,
+                CompareOp::Lesser => a < b,
+                CompareOp::LesserEqual => a <= b,
                 _ => false,
             },
             (Value::Integer(a), Value::Float(b)) => match op {
-                ">" => (*a as f64) > *b,
-                ">=" => (*a as f64) >= *b,
-                "<" => (*a as f64) < *b,
-                "<=" => (*a as f64) <= *b,
+                CompareOp::Greater => (*a as f64) > *b,
+                CompareOp::GreaterEqual => (*a as f64) >= *b,
+                CompareOp::Lesser => (*a as f64) < *b,
+                CompareOp::LesserEqual => (*a as f64) <= *b,
                 _ => false,
             },
             (Value::Float(a), Value::Integer(b)) => match op {
-                ">" => *a > (*b as f64),
-                ">=" => *a >= (*b as f64),
-                "<" => *a < (*b as f64),
-                "<=" => *a <= (*b as f64),
+                CompareOp::Greater => *a > (*b as f64),
+                CompareOp::GreaterEqual => *a >= (*b as f64),
+                CompareOp::Lesser => *a < (*b as f64),
+                CompareOp::LesserEqual => *a <= (*b as f64),
                 _ => false,
             },
             _ => false,
@@ -390,74 +538,6 @@ impl Value {
         }
     }
 
-    /// Converts a `serde_json::Value` into a `vm::Value` type
-    pub fn from_json(json: &serde_json::Value) -> Value {
-        match json {
-            // Numbers are as simply as pi :)
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Value::Integer(i)
-
-                } else if let Some(f) = n.as_f64() {
-                    Value::Float(f)
-
-                } else {
-                    Value::Nil
-                }
-            }
-
-            // We consider our special keywords within strings
-            serde_json::Value::String(s) => match s.as_str() {
-                "possible" => Value::new_possible(),
-                "nil" => Value::Nil,
-
-                _ => Value::String(s.clone()),
-            },
-            
-            // That's just dereferencing the bool contained within
-            serde_json::Value::Bool(b) => Value::Boolean(*b),
-            
-            // Unwraps the object value within, e.g. {"Value": 50} or {"ResortValue": "I am very resortable"}
-            serde_json::Value::Object(map) => {
-                if let Some(inner_val) = map.get("Value") {
-                    Self::from_json(inner_val)
-
-                }
-                else if let Some(resort) = map.get("ResortValue") {
-                    Self::from_json(resort)
-
-                }
-                // Normal Object entries are treated like individual pieces of a dictionary!
-                else {
-                    let mut keys = Vec::new();
-                    let mut values = Vec::new();
-
-                    for (k, v) in map {
-                        // Recursively parse both the key and the value
-                        keys.push(Value::String(k.clone()));
-                        values.push(Self::from_json(v));
-                    }
-
-                    // Return a new dictionary with no special stuff
-                    Self::new_dictionary(None, None, None, keys, values)
-                }
-            }
-            
-            // Equivalent to nothing
-            serde_json::Value::Null => Value::Nil,
-            
-            // An array is a list to us, although I wonder when we will ever send anything as an array...
-            serde_json::Value::Array(arr) => {
-                let items: Vec<Value> = arr.iter().map(Self::from_json).collect();
-
-                Self::new_list(None, items)
-            }
-            //     element_type: None,
-            //     items: arr.iter().map(Self::from_json).collect(),
-            // },
-        }
-    }
-
     /// Validates that if this Value is a Dictionary, it contains no duplicate keys.
     /// Panics if duplicates are found and `allow_duplicates` is false or None.
     pub fn ensure_no_duplicate_keys(&self) {
@@ -476,372 +556,6 @@ impl Value {
                 }
             }
         }
-    }
-}
-
-/*
-    ----------------------
-    ----- TYPE NAMES -----
-    ----------------------
-*/
-
-/// An enum of all possible `MaxType`
-#[derive(Debug, Clone, PartialEq)]
-pub enum MaxType {
-    NumberType,
-    IntegerType,
-    FloatType,
-
-    StringType,
-
-    BooleanType,
-    PossibleType,
-
-    ListType(Option<Box<MaxType>>),
-    DictionaryType(Option<Box<MaxType>>, Option<Box<MaxType>>),
-
-    TaskType(usize), // I.e. Lambdas
-    CoroutineType,
-
-    EnumType(String), // An EnumType has a specific identifier unique to it
-
-    // A special type for niche situations within the code
-    NoType
-}
-
-impl MaxType {    
-
-    /// Compares if the max types of this and another type are the same. This ignores values within the Variant Type
-    pub fn compare_valuetypes(&self, other: &MaxType) -> bool {
-        // Like Value logic but with types
-        std::mem::discriminant(self) == std::mem::discriminant(other)
-    }
-
-    /**
-        Returns true if the `actual` type can be assigned to a variable expecting `self
-        ### Example
-        IntegerTypes are assignable to FloatTypes
-
-        ```
-        let integerType = MaxType::IntegerType;
-
-        println!("{}", integerType.is_assignable_to(MaxType::FloatType)) // Prints true
-        ```
-    */
-    pub fn is_assignable_to(&self, actual: &MaxType) -> bool {
-        // When we are just comparing a type to itself
-        if self == actual {
-            return true;
-        }
-
-        match (self, actual) {
-            // NumberType accepts both IntegerType and FloatType
-            (MaxType::NumberType, MaxType::IntegerType) => true,
-            (MaxType::NumberType, MaxType::FloatType) => true,
-
-            // A FloatType can accept an IntegerType (but not vice versa)
-            (MaxType::FloatType, MaxType::IntegerType) => true,
-
-            // A possible type is also a Boolean-Like
-            (MaxType::BooleanType, MaxType::PossibleType) => true,
-            
-            // Nested type checking for lists (E.g. A list of numbers are both ints and floats; This prevents weird type errors)
-            (MaxType::ListType(Some(expected_elem)), MaxType::ListType(Some(actual_elem))) => {
-                expected_elem.is_assignable_to(actual_elem)
-            }
-
-            (MaxType::DictionaryType(Some(expected_key), Some(expected_val)), MaxType::DictionaryType(Some(actual_key), Some(actual_val))) => {
-                expected_key.is_assignable_to(actual_key) && expected_val.is_assignable_to(actual_val)
-            }
-            
-            _ => false,
-        }
-    }
-
-    /**
-        Checks if a value and the expected type are compatible. Returns a Boolean of the result in the end.
-        This function is used for runtime during Virtual Machine execution.
-
-        ### Example
-        A String Value and String Type are compatible, but not a Boolean Value and StringType.
-        An Integer Value and a Number Type also works.
-
-        ```
-        let int = Value::Integer(5);
-
-        let boolean = Value::Boolean(true);
-
-        println!("{}", MaxType::check_value_compatibility(MaxType::IntegerType, int)); // True
-        println!("{}", MaxType::check_value_compatibility(MaxType::StringType, boolean)); // False
-        println!("{}", MaxType::check_value_compatibility(MaxType::NumberType, int)); // True
-        ```
-    */
-    pub fn check_value_compatibility(expected_type: &MaxType, value: &Value) -> bool {
-        match (expected_type, value) {
-            (MaxType::IntegerType, Value::Integer(_)) => true,
-            (MaxType::FloatType, Value::Float(_)) => true,
-            (MaxType::FloatType, Value::Integer(_)) => true,
-            
-            // NumberType allows both Integer and Float runtime values
-            (MaxType::NumberType, Value::Integer(_)) => true,
-            (MaxType::NumberType, Value::Float(_)) => true,
-
-            (MaxType::StringType, Value::String(_)) => true,
-
-            // Possible or Boolean, it works!
-            (MaxType::BooleanType, Value::Boolean(_)) => true,
-            (MaxType::BooleanType, Value::Possible(_)) => true,
-            (MaxType::PossibleType, Value::Possible(possible)) => possible.borrow().current.is_none(),
-
-            (MaxType::ListType(expected_elements), Value::List(list_vals)) => {
-                // This gets the elements, iterates and puts a closure upon all of them, checking if they are compatible with the element type!
-                let elements_ok = match expected_elements {
-                    Some(e_type) => list_vals.borrow().items.iter().all(|e| MaxType::check_value_compatibility(e_type, e)),
-                    None => true,
-                };
-                elements_ok
-            },
-            
-            (MaxType::DictionaryType(expected_key, expected_val), Value::Dictionary(dictionary)) => {
-                let dictionary = dictionary.borrow();
-                // If dictionary types are specified, check elements; if no specifications, allow any
-                let key_ok = match expected_key {
-                    Some(k_type) => dictionary.keys.iter().all(|k| MaxType::check_value_compatibility(k_type, k)),
-                    None => true,
-                };
-                let val_ok = match expected_val {
-                    Some(v_type) => dictionary.values.iter().all(|v| MaxType::check_value_compatibility(v_type, v)),
-                    None => true,
-                };
-                key_ok && val_ok
-            },
-
-            (MaxType::CoroutineType, Value::Coroutine(_)) => true,
-            (MaxType::TaskType(t), Value::Lambda(l)) => {
-                // Check if argument count also works!
-                if *t as u64 == l.definition.arity {
-                    return true
-                }
-                false
-            },
-
-            (MaxType::EnumType(t), Value::EnumDefinition(e)) => t == &e.identifier,
-            (MaxType::EnumType(t), Value::EnumMember(mem)) => t == &mem.enum_name,
-
-            // These two are special!
-            (MaxType::NoType, _) => true,
-            (_, Value::Nil) => true,
-            
-            _ => false,
-        }
-    }
-
-    /// A function that errs when the value is not compatible with the given type.
-    /// Calls `MaxType::check_value_compatibility()` to do so.
-    pub fn ensure_compatibility(expected_type: &MaxType, value: &Value) {
-        if !MaxType::check_value_compatibility(expected_type, value) {
-            panic!("Invalid Type Compatibility! Expected type '{}', got Value '{}'", expected_type, value);
-        }
-    }
-
-    /// Checks if a given value is valid to be a dictionary key
-    pub fn valid_dictkey_value(&self, value: &Value) -> bool {
-        match self {
-            // Pretty cool, '..' means just ignore what's inside
-            MaxType::DictionaryType( .. ) => {
-                if matches!(value, Value::String(_) | Value::Integer(_)) {
-                    return true
-                }
-
-                false
-            }
-
-            _ => { println!("Can only call this function on dictionaries!"); false }
-        }
-    }
-
-    /// Checks if a given type is valid to be a dictionary key
-    pub fn valid_dictkey_type(&self, value: &MaxType) -> bool {
-        match self {
-            // Pretty cool, '..' means just ignore what's inside
-            MaxType::DictionaryType( .. ) => {
-                if matches!(value, MaxType::StringType | MaxType::IntegerType) {
-                    return true
-                }
-
-                false
-            }
-
-            _ => { println!("Can only call this function on dictionaries!"); false }
-        }
-    }
-
-    pub fn string_name_to_max(name: &str) -> MaxType {
-        match name {
-            "NumberType" => MaxType::NumberType,
-            "IntegerType" => MaxType::IntegerType,
-            "FloatType" => MaxType::FloatType,
-
-            "StringType" => MaxType::StringType,
-
-            "BooleanType" => MaxType::BooleanType,
-            "PossibleType" => MaxType::PossibleType,
-
-            "ListType" => MaxType::ListType(None),
-            "DictionaryType" => MaxType::DictionaryType(None, None),
-
-            "CoroutineType" => MaxType::CoroutineType,
-            "TaskType" => MaxType::TaskType(0),
-
-            "NoType" => MaxType::NoType,
-
-            _ => panic!("Unknown MaxType name given: {}", name)
-        }
-    }
-}
-
-impl fmt::Display for MaxType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Write out the name of the Type
-        match self {
-            MaxType::NumberType => write!(f, "NumberType"),
-            MaxType::IntegerType => write!(f, "IntegerType"),
-            MaxType::FloatType => write!(f, "FloatType"),
-
-            MaxType::StringType => write!(f, "StringType"),
-
-            MaxType::BooleanType => write!(f, "BooleanType"),
-            MaxType::PossibleType => write!(f, "PossibleType"),
-
-            MaxType::NoType => write!(f, "NoType"),
-
-            // Lists can also write out their element type
-            MaxType::ListType(elem) => match elem {
-                Some(inner) => write!(f, "ListType<{}>", inner),
-
-                None => write!(f, "ListType"),
-            },
-
-            // Dictionaries can also write out the key/value types
-            MaxType::DictionaryType(key, val) => match (key, val) {
-                (Some(k), Some(v)) => write!(f, "DictionaryType<{}, {}>", k, v),
-
-                _ => write!(f, "DictionaryType"),
-            },
-
-            MaxType::CoroutineType => write!(f, "CoroutineType"),
-            MaxType::TaskType(_) => write!(f, "TaskType"),
-
-            MaxType::EnumType(enum_name) => write!(f, "{}", enum_name)
-        }
-    }
-}
-
-// Doing this allows us to convert the string from the JSON into a MaxType immediately
-impl<'de> Deserialize<'de> for MaxType {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct MaxTypeVisitor;
-
-        // Here we find the MaxType 'visitor' to convert into valid Typing
-        impl<'de> Visitor<'de> for MaxTypeVisitor {
-            type Value = MaxType;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a JSON object containing type representation metadata")
-            }
-
-            // This allows handling null values
-            fn visit_none<E>(self) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(MaxType::NoType)
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(MaxType::NoType)
-            }
-
-            // Just for when the type name is a simply string value
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(MaxType::string_name_to_max(value))
-            }
-
-            // We have both a visit_str and visit_map so that types, whether as JSON objects or strings, can always be parsed!
-            fn visit_map<M>(self, mut map: M) -> Result<MaxType, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                let mut kind: Option<String> = None;
-                let mut name: Option<String> = None;
-                let mut element_type: Option<MaxType> = None;
-                let mut key_type: Option<MaxType> = None;
-                let mut value_type: Option<MaxType> = None;
-
-                // Loop through keys in the JSON map
-                while let Some(key) = map.next_key::<String>()? {
-                    // This is where we check inside the 'Type' field
-                    match key.as_str() {
-                        "kind" => kind = Some(map.next_value()?),
-                        "name" => name = Some(map.next_value()?),
-
-                        "elementType" => element_type = Some(map.next_value()?),
-                        "keyType" => {
-                            // Allows null JSON values to deserialize as None instead of throwing an error
-                            key_type = map.next_value::<Option<MaxType>>()?;
-                        }
-                        "valueType" => {
-                            value_type = map.next_value::<Option<MaxType>>()?;
-                        }
-
-                        _ => {
-                            let _: serde_json::Value = map.next_value()?;
-                        }
-                    }
-                }
-
-                // Check if kind exists (it must!)
-                let kind_str = kind.ok_or_else(|| de::Error::missing_field("kind"))?;
-
-                // And now we check for what type it is
-                match kind_str.as_str() {
-
-                    // Primitive types as most are. They only hold a 'name' field
-                    "PrimitiveType" => {
-                        let type_name = name.ok_or_else(|| de::Error::missing_field("name"))?;
-                        Ok(MaxType::string_name_to_max(&type_name))
-                    }
-
-                    // Enum types are custom
-                    "EnumType" => {
-                        let enum_name = name.ok_or_else(|| de::Error::missing_field("name"))?;
-                        Ok(MaxType::EnumType(enum_name))
-                    }
-
-                    // Iterables hold types for their respective elements too! \\
-
-                    "ListType" => Ok(MaxType::ListType(element_type.map(Box::new))),
-
-                    "DictionaryType" => Ok(MaxType::DictionaryType(
-                        key_type.map(Box::new),
-                        value_type.map(Box::new),
-                    )),
-
-                    _ => Err(de::Error::custom(format!("Unknown type kind: {}", kind_str))),
-                }
-            }
-        }
-
-        deserializer.deserialize_any(MaxTypeVisitor)
     }
 }
 
@@ -866,7 +580,7 @@ pub struct CallFrame {
     pub return_ip: usize,
 
     /// The instruction chunk to resume after this call returns.
-    pub return_instructions: Arc<Vec<Instruction>>,
+    pub return_instructions: Arc<Vec<Op>>,
 
     pub is_lambda: bool,
 
@@ -877,7 +591,7 @@ pub struct CallFrame {
 
 impl CallFrame {
     pub fn new(task_info: Option<TaskInfo>, coroutine_instance: Option<CoroutineHandle>, return_ip: usize,
-                return_instructions: Arc<Vec<Instruction>>, is_lambda: bool, scope_depth: usize, module_name: String) -> Self
+                return_instructions: Arc<Vec<Op>>, is_lambda: bool, scope_depth: usize, module_name: String) -> Self
     {
         Self { task_info, coroutine_instance, return_ip, return_instructions, is_lambda, scope_depth, module_name }
     }
@@ -891,13 +605,12 @@ pub struct VirtualMachine {
     call_stack: Vec<CallFrame>,
     native_registry: NativeRegistry,
 
-    pub active_instructions: Arc<Vec<Instruction>>,
+    pub active_instructions: Arc<Vec<Op>>,
 
     task_definitions: Arc<HashMap<String, TaskInfo>>,
     modules: Arc<HashMap<String, Bytecode>>,
     module_name: String,
     enums: Arc<HashMap<String, EnumStructure>>,
-    lambda_cache: HashMap<u64, Arc<LambdaOperand>>,
 
     /// A collector for the dependencies the current possible handles hold
     dependency_collector: Option<Rc<RefCell<HashSet<DependencyKey>>>>,
@@ -920,7 +633,6 @@ impl VirtualMachine {
             modules: Arc::default(),
             module_name: String::new(),
             enums: Arc::default(),
-            lambda_cache: HashMap::new(),
             dependency_collector: None,
             dependency_subscribers: HashMap::new(),
             evaluating_possible: HashSet::new(),
@@ -965,240 +677,207 @@ impl VirtualMachine {
 
         // We use a while loop in order to allow ip to be mutable and changed within the loop!
         while ip < active_instructions.len() {
-            let instr = active_instructions[ip].clone();
+            let current = Arc::clone(&active_instructions);
+            let op = &current[ip];
 
-            match instr.op_code.as_str() {
-                "Constant" => {
+            match op {
+                Op::Constant(c) => {
                     // Get value
-                    if let Some(val) = &instr.operand {
-                        // Get as some different types of values
-                        if let Some(s) = val.as_str() {
-                            // What if it is not just ANY string? hmmmmm?
-                            match s {
-                                "possible" => self.stack.push(Value::new_possible()),
-                                
-                                _ => self.stack.push(Value::String(s.to_string())),
-                            }
+                    match c {
+                        ConstValue::Str(s) => {
+                            self.stack.push(Value::String(s.clone()));
                         }
-                        else if let Some(n) = val.as_i64() {
-                            self.stack.push(Value::Integer(n));
+                        ConstValue::Integer(i) => {
+                            self.stack.push(Value::Integer(*i));
                         }
-                        else if let Some(n) = val.as_f64() {
-                            self.stack.push(Value::Float(n));
-                        } else if let Some(b) = val.as_bool() {
-                            self.stack.push(Value::Boolean(b));
-                        } else if let Some(_) = val.as_null() {
+                        ConstValue::Float(f) => {
+                            self.stack.push(Value::Float(*f));
+                        }
+                        ConstValue::Boolean(b) => {
+                            self.stack.push(Value::Boolean(*b));
+                        }
+                        ConstValue::Possible => {
+                            self.stack.push(Value::new_possible());
+                        }
+                        ConstValue::Nil => {
                             self.stack.push(Value::Nil);
                         }
+                        _ => {
+                            panic!("{:?} is not a ConstValue meant to be intaken by Op::Constant", c)
+                        }
                     }
                 }
 
-                "MakeList" => {
-                    if let Some(count) = &instr.operand && let Some(val) = count.as_u64() {
-                        let mut listables: Vec<Value> = vec![];
+                Op::MakeList(number) => {
+                    let mut listables: Vec<Value> = vec![];
 
-                        for _index in 0..val {
-                            if let Some(object) = self.stack.pop() {
-                                // Insert at the beginning
-                                listables.insert(0, object);
-                            }
+                    for _index in 0..*number as i64 {
+                        if let Some(object) = self.stack.pop() {
+                            // Insert at the beginning
+                            listables.insert(0, object);
+                        }
+                    }
+
+                    self.stack.push(Value::new_list(None, listables));
+                }
+
+                Op::MakeDictionary(amount) => {
+                    let entry_count = *amount as i32;
+
+                    let mut keys_list: Vec<Value> = vec![];
+                    let mut values_list: Vec<Value> = vec![];
+
+                    for _count in 0..entry_count {
+                        // We pop value first because we are starting from the top of the stack. Remember?
+                        let val = self.stack.pop().unwrap_or(Value::Nil);
+                        let key = self.stack.pop().unwrap_or(Value::Nil);
+
+                        // Validate typing
+                        if !MaxType::DictionaryType(None, None).valid_dictkey_type(&key.get_type()) {
+                            panic!("Invalid");
                         }
 
-                        self.stack.push(Value::new_list(None, listables));
+                        // We insert it at the beginning, because AGAIN!
+                        // We are taking values from popping the stack, which is in reverse order!
+                        keys_list.insert(0, key);
+                        values_list.insert(0, val);
                     }
+
+                    let dictionary = Value::new_dictionary(None, None, None, keys_list, values_list);
+                    dictionary.ensure_no_duplicate_keys();
+
+                    self.stack.push(dictionary);
                 }
 
-                "MakeDictionary" => {
-                    if let Some(operand) = &instr.operand {
-                        let entry_count = operand.as_u64().unwrap_or(0);
+                Op::CreateCoroutine(coroutine_info) => {
+                    let inst: CoroutineInstance
+                        = CoroutineInstance { execution_state: ExecutionState::Idle, return_type: coroutine_info.return_type.clone(),
+                                                instruction_point: coroutine_info.entry_point, entry_point: coroutine_info.entry_point,
+                                                saved_scopes: None, module_name: self.module_name.clone() };
 
-                        let mut keys_list: Vec<Value> = vec![];
-                        let mut values_list: Vec<Value> = vec![];
-
-                        for _count in 0..entry_count {
-                            // We pop value first because we are starting from the top of the stack. Remember?
-                            let val = self.stack.pop().unwrap_or(Value::Nil);
-                            let key = self.stack.pop().unwrap_or(Value::Nil);
-
-                            // Validate typing
-                            DictionaryType(None, None).valid_dictkey_value(&key);
-
-                            // We insert it at the beginning, because AGAIN!
-                            // We are taking values from popping the stack, which is in reverse order!
-                            keys_list.insert(0, key);
-                            values_list.insert(0, val);
-                        }
-
-                        let dictionary = Value::new_dictionary(None, None, None, keys_list, values_list);
-                        dictionary.ensure_no_duplicate_keys();
-
-                        self.stack.push(dictionary);
-                    }
+                    self.stack.push(Value::Coroutine(Rc::new(RefCell::new(inst))));
                 }
 
-                "CreateCoroutine" => {
-                    if let Some(operand_json) = &instr.operand {
-                        let coroutine_info: CoroutineInfo = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid Create-Coroutine operand format");
+                Op::DefineEnum(enum_info) => {
+                    let bound = enum_info.identifier.clone();
 
-                        let inst: CoroutineInstance
-                            = CoroutineInstance { execution_state: ExecutionState::Idle, return_type: coroutine_info.return_type,
-                                                  instruction_point: coroutine_info.entry_point, entry_point: coroutine_info.entry_point,
-                                                  saved_scopes: None, module_name: self.module_name.clone() };
-
-                        self.stack.push(Value::Coroutine(Rc::new(RefCell::new(inst))));
-                    } else {
-                        panic!("[IP {:04}] Operand for creating a coroutine must include it's necessary info.", ip)
-                    }
-                }
-
-                "DefineEnum" => {
-                    if let Some(operand_json) = &instr.operand {
-                        let enum_info: EnumStructure = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid Define-Enum operand format");
-
-                        let bound = enum_info.identifier.clone();
-
-                        // Push in the new enum
-                        // Ye that's it
-                        Arc::make_mut(&mut self.enums).insert(bound, enum_info);
-                    }
+                    // Push in the new enum
+                    // Ye that's it
+                    Arc::make_mut(&mut self.enums).insert(bound, enum_info.clone());
                 }
 
                 // field: lambda_cache: HashMap<u64, Arc<LambdaOperand>>
 
-                "Lambda" => {
-                    if let Some(operand_json) = &instr.operand {
-                        let id = operand_json.get("ID").and_then(|v| v.as_u64())
-                            .expect("Lambda operand is missing its ID");
+                Op::Lambda(lambda) => {
+                    let mut captures = HashMap::new();
+                    // Input them captures!
+                    for name in &lambda.captured {
+                        let entry = self.scopes.iter().rev().find_map(|scope| scope.get(name));
+                        if let Some(entry) = entry {
+                            captures.insert(name.clone(), entry.clone());
+                        } else {
+                            panic!("[IP {:04}] Captured variable '{}' is not defined.", ip, name);
+                        }
+                    }
 
-                        // Very nicely get the lambda found from the VM Hashmap
-                        // Inserting a new lambda into the cache if it doesn't already exist
-                        let definition = match self.lambda_cache.get(&id) {
-                            Some(cached) => Arc::clone(cached),
-                            None => {
-                                let parsed: Arc<LambdaOperand> = Arc::new(
-                                    LambdaOperand::deserialize(operand_json)
-                                        .expect("Invalid LambdaOperand attached to Lambda Instruction"));
-                                self.lambda_cache.insert(id, Arc::clone(&parsed));
-                                parsed
-                            }
-                        };
+                    // Push, as always
+                    self.stack.push(Value::Lambda(RuntimeLambda {
+                        definition: lambda.to_owned(),
+                        captures: Arc::new(captures),
+                    }));
+                }
 
-                        let mut captures = HashMap::new();
-                        // Input them captures!
-                        for name in &definition.captured {
-                            let entry = self.scopes.iter().rev().find_map(|scope| scope.get(name));
-                            if let Some(entry) = entry {
-                                captures.insert(name.clone(), entry.clone());
+                Op::MemberAccess(operand) => {
+                    // Match based on the access type sent by the compiler ("Module", "Enum", etc.)
+                    // So it's like Candy Crush all over again
+                    match operand.access_type {
+                        MemberAccessType::Module => {
+                            // Let us pop the module name like a balloon off the stack
+                            let target_val = self.stack.pop().unwrap_or(Value::Nil);
+                            let module_name = match target_val {
+                                Value::String(s) => s,
+                                _ => panic!("[IP {:04}] Expected module name string on stack, got {:?}", ip, target_val),
+                            };
+
+                            // Look up the imported module
+                            if let Some(module_bytecode) = self.modules.get(&module_name) {
+                                // Check if the member is an enum inside this module
+                                if let Some(enum_info) = module_bytecode.enums.get(&operand.member_name).cloned() {
+                                    let enum_def = Value::EnumDefinition(enum_info);
+                                    
+                                    // Now, push the resolved EnumDefinition onto the stack!
+                                    self.stack.push(enum_def);
+                                } 
+                                // Twas a coroutine instead?
+                                else if let Some(coroutine_info) = module_bytecode.coroutines.get(&operand.member_name) {
+                                    let instance = CoroutineInstance {
+                                        execution_state: ExecutionState::Idle,
+                                        return_type: coroutine_info.return_type.clone(),
+                                        instruction_point: coroutine_info.entry_point,
+                                        entry_point: coroutine_info.entry_point,
+                                        saved_scopes: None,
+                                        module_name: module_name.clone(),
+                                    };
+                                    self.stack.push(Value::Coroutine(Rc::new(RefCell::new(instance))));
+                                } 
+                                else {
+                                    panic!(
+                                        "[IP {:04}] Member '{}' not found in imported module '{}'",
+                                        ip, operand.member_name, module_name
+                                    );
+                                }
                             } else {
-                                panic!("[IP {:04}] Captured variable '{}' is not defined.", ip, name);
+                                panic!("[IP {:04}] Module '{}' not found", ip, module_name);
                             }
                         }
 
-                        // Push, as always
-                        self.stack.push(Value::Lambda(RuntimeLambda {
-                            definition,
-                            captures: Arc::new(captures),
-                        }));
-                    }
-                }
+                        MemberAccessType::Enum => {
+                            // Else pop the EnumDefinition that was pushed by the previous access
+                            let target_val = self.stack.pop().unwrap_or(Value::Nil);
+                            let enum_struct = match target_val {
+                                Value::EnumDefinition(e) => e,
+                                _ => panic!("[IP {:04}] Expected EnumDefinition on stack for enum member access, got {:?}", ip, target_val),
+                            };
 
-                "MemberAccess" => {
-                    if let Some(operand_json) = &instr.operand {
-                        let operand: MemberAccessOperand = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid MemberAccessOperand format");
-
-                        // Match based on the access type sent by the compiler ("Module", "Enum", etc.)
-                        match operand.access_type.as_str() {
-                            "Module" => {
-                                // Let us pop the module name like a balloon off the stack
-                                let target_val = self.stack.pop().unwrap_or(Value::Nil);
-                                let module_name = match target_val {
-                                    Value::String(s) => s,
-                                    _ => panic!("[IP {:04}] Expected module name string on stack, got {:?}", ip, target_val),
-                                };
-
-                                // Look up the imported module
-                                if let Some(module_bytecode) = self.modules.get(&module_name) {
-                                    // Check if the member is an enum inside this module
-                                    if let Some(enum_info) = module_bytecode.enums.get(&operand.member_name).cloned() {
-                                        let enum_def = Value::EnumDefinition(enum_info);
-                                        
-                                        // Now, push the resolved EnumDefinition onto the stack!
-                                        self.stack.push(enum_def);
-                                    } 
-                                    // Twas a coroutine instead?
-                                    else if let Some(coroutine_info) = module_bytecode.coroutines.get(&operand.member_name) {
-                                        let instance = CoroutineInstance {
-                                            execution_state: ExecutionState::Idle,
-                                            return_type: coroutine_info.return_type.clone(),
-                                            instruction_point: coroutine_info.entry_point,
-                                            entry_point: coroutine_info.entry_point,
-                                            saved_scopes: None,
-                                            module_name: module_name.clone(),
-                                        };
-                                        self.stack.push(Value::Coroutine(Rc::new(RefCell::new(instance))));
-                                    } 
-                                    else {
-                                        panic!(
-                                            "[IP {:04}] Member '{}' not found in imported module '{}'",
-                                            ip, operand.member_name, module_name
-                                        );
-                                    }
-                                } else {
-                                    panic!("[IP {:04}] Module '{}' not found", ip, module_name);
-                                }
+                            // Look up the specific member (e.g., "North") inside the enum
+                            if let Some(member_value) =
+                                enum_struct.enum_members.into_iter().find(|mem| mem.name == operand.member_name)
+                            {
+                                // Push the final resolved enum member value onto the stack
+                                self.stack.push(Value::EnumMember(member_value));
                             }
-
-                            "Enum" => {
-                                // Else pop the EnumDefinition that was pushed by the previous access
-                                let target_val = self.stack.pop().unwrap_or(Value::Nil);
-                                let enum_struct = match target_val {
-                                    Value::EnumDefinition(e) => e,
-                                    _ => panic!("[IP {:04}] Expected EnumDefinition on stack for enum member access, got {:?}", ip, target_val),
-                                };
-
-                                // Look up the specific member (e.g., "North") inside the enum
-                                if let Some(member_value) =
-                                    enum_struct.enum_members.into_iter().find(|mem| mem.name == operand.member_name)
-                                {
-                                    // Push the final resolved enum member value onto the stack
-                                    self.stack.push(Value::EnumMember(member_value));
-                                }
-                                else {
-                                    panic!("[IP {:04}] No member found for enum '{}' by the name '{}'", ip, enum_struct.identifier, operand.member_name)
-                                }
+                            else {
+                                panic!("[IP {:04}] No member found for enum '{}' by the name '{}'", ip, enum_struct.identifier, operand.member_name)
                             }
+                        }
 
-                            "EnumMember" => {
-                                let target_val = self.stack.pop().unwrap_or(Value::Nil);
-                                // Get the parent. It MUST be an EnumMember... for obvious reasons
-                                let parent = match target_val {
-                                    Value::EnumMember(m) => m,
-                                    _ => panic!("[IP {:04}] Expected an enum member on the stack, got {:?}", ip, target_val),
-                                };
+                        MemberAccessType::EnumMember => {
+                            let target_val = self.stack.pop().unwrap_or(Value::Nil);
+                            // Get the parent. It MUST be an EnumMember... for obvious reasons
+                            let parent = match target_val {
+                                Value::EnumMember(m) => m,
+                                _ => panic!("[IP {:04}] Expected an enum member on the stack, got {:?}", ip, target_val),
+                            };
 
-                                // Now get the sub-member
-                                let child = self.find_sub_member(&parent, &operand.member_name)
-                                    .unwrap_or_else(|| panic!(
-                                        "[IP {:04}] '{}' has no sub member '{}'",
-                                        ip, parent.full_name(), operand.member_name
-                                    ));
+                            // Now get the sub-member
+                            let child = self.find_sub_member(&parent, &operand.member_name)
+                                .unwrap_or_else(|| panic!(
+                                    "[IP {:04}] '{}' has no sub member '{}'",
+                                    ip, parent.full_name(), operand.member_name
+                                ));
 
-                                // Push!!!
-                                self.stack.push(Value::EnumMember(child));
-                            }
+                            // Push!!!
+                            self.stack.push(Value::EnumMember(child));
+                        }
 
-                            _ => {
-                                panic!("[IP {:04}] Unknown member access type: '{}'", ip, operand.access_type);
-                            }
+                        MemberAccessType::None => {
+                            panic!("[IP {:04}] Unknown member access type: '{:?}'", ip, operand.access_type);
                         }
                     }
                 }
 
                 // Legit... It just pops from the stack
-                "Pop" => { self.stack.pop(); }
+                Op::Pop => { self.stack.pop(); }
 
 
                 /*
@@ -1209,12 +888,12 @@ impl VirtualMachine {
 
                 
                 // Push a new local variable scope onto the stack
-                "EnterScope" => {
+                Op::EnterScope => {
                     self.scopes.push(Arc::new(HashMap::new()));
                 }
 
                 // Pop the innermost scope, destroying its local variables along with it
-                "ExitScope" => {
+                Op::ExitScope => {
                     if self.scopes.len() > 1 {
                         self.scopes.pop();
                     } else {
@@ -1224,66 +903,60 @@ impl VirtualMachine {
                 }
 
                 // Store a variable within the most local scope concurrently
-                "Store" => {
-                    if let Some(operand_json) = &instr.operand {
-                        let var_info: StoreOperand = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid Store operand format");
-                        let mut val = self.stack.pop().unwrap_or(Value::Nil);
+                Op::Store(var_info) => {
+                    let mut val = self.stack.pop().unwrap_or(Value::Nil);
 
-                        // Get resort value if possible without moving the option out of var_info. (aka not stealing the child from it's mother)
-                        let resort_value = var_info.resort_value.as_ref();
-                        
-                        // We map the json to get any value within (which for the resortValue would the "Value", look at any json files to see this!)
-                        let resort_val: Option<Value> = resort_value.map(Value::from_json);
+                    // Get resort value if possible without moving the option out of var_info. (aka not stealing the child from it's mother)
+                    let resort_value = var_info.resort_value.as_ref();
+                    
+                    // We map the json to get any value within (which for the resortValue would the "Value", look at any json files to see this!)
+                    let resort_val: Option<&ConstValue> = resort_value.map(|c| c);
 
-                        if &val == &Value::Nil && let Some(resortable) = resort_val.clone() {
+                    if &val == &Value::Nil && let Some(resortable) = resort_val.clone() {
 
-                            // Yep, checking for this as well!
-                            if let Some(resort_checkable) = &var_info.max_type {
-                                MaxType::ensure_compatibility(resort_checkable, &resortable);
-                            }
+                        let val_resortable = Value::from_const(resortable);
 
-                            val = resortable;
+                        // Yep, checking for this as well!
+                        if let Some(resort_checkable) = &var_info.max_type {
+                            Self::ensure_compatibility(resort_checkable, &val_resortable);
                         }
 
-                        // Lotta type checking!
-                        if let Some(type_checkable) = &var_info.max_type {
-                            MaxType::ensure_compatibility(type_checkable, &val);
-                        }
-
-                        let entry = VariableEntry::new(
-                            val, var_info.modifiers, var_info.max_type, resort_val,
-                        );
-                        
-                        let existing = self.lookup_variable(&var_info.name);
-
-                        /*
-                            Does the found variable (already declared) allow shadowing?
-                            Be aware that this finds the FIRST existing variable, so if it finds a variable shadowing another variable...
-                            And THAT variable does not have shadowing allows, then this fails!
-                        */ 
-                        if let Some(found) = existing && !found.modifiers.contains(&String::from("open")) {
-                            panic!("Cannot redeclare a variable! Modify the original variable to be open if needed.")
-                        }
-
-                        let current_scope = Arc::make_mut(self.scopes.last_mut().expect("Scopes stack is empty!"));
-
-                        current_scope.insert(var_info.name, entry);
+                        // Immediately update!
+                        val = val_resortable;
                     }
-                },
 
-                "TemporaryStore" => {
+                    // Lotta type checking!
+                    if let Some(type_checkable) = &var_info.max_type {
+                        Self::ensure_compatibility(type_checkable, &val);
+                    }
+
+                    let entry = VariableEntry::new(
+                        val, var_info.modifiers, var_info.max_type.clone(), resort_val.cloned(),
+                    );
+                    
+                    let existing = self.lookup_variable(&var_info.name);
+
+                    /*
+                        Does the found variable (already declared) allow shadowing?
+                        Be aware that this finds the FIRST existing variable, so if it finds a variable shadowing another variable...
+                        And THAT variable does not have shadowing allows, then this fails!
+                    */ 
+                    if let Some(found) = existing && !found.modifiers.open {
+                        panic!("Cannot redeclare a variable! Modify the original variable to be open if needed.")
+                    }
+
+                    let current_scope = Arc::make_mut(self.scopes.last_mut().expect("Scopes stack is empty!"));
+
+                    current_scope.insert(var_info.name.clone(), entry);
+                }
+
+                Op::TemporaryStore(operand) => {
                     // Check for value popped and index in operand
                     if let Some(val) = &self.stack.pop() {
-                        if let Some(operand_json) = &instr.operand {
-                            let slot = operand_json.as_u64().expect("Slot for a Temporary Store must be a positive integer");
+                        let slot: u64 = *operand;
 
-                            // Now insert!
-                            self.temporaries.insert(slot, val.clone());
-                        }
-                        else {
-                            panic!("[IP {:04}] Operand was not given for temporarily storing.", ip);
-                        }
+                        // Now insert!
+                        self.temporaries.insert(slot, val.clone());
                     }
                     else {
                         panic!("[IP {:04}] No value found to store in temporaries.", ip);
@@ -1292,172 +965,156 @@ impl VirtualMachine {
                 
                 // Load a variable from the current scope or parent scopes
                 // Scoping prevents scopes that were destroyed from being called
-                "Load" => {
-                    if let Some(operand_json) = &instr.operand {
-                        // Get string name
-                        let name = operand_json.as_str()
-                            .expect("The operand of a 'Load' must be a string name");
-                        let mut found_binding: Option<Rc<RefCell<Value>>> = None;
+                Op::Load(name) => {
+                    let mut found_binding: Option<Rc<RefCell<Value>>> = None;
 
-                        // Check through each scope, and when the name is found, break with the new value
-                        // Btw, reverse the scopes to start from the innermost one!
-                        if let Some(found_var) = self.lookup_variable(name) {
-                            found_binding = Some(Rc::clone(&found_var.value));
+                    // Check through each scope, and when the name is found, break with the new value
+                    // Btw, reverse the scopes to start from the innermost one!
+                    if let Some(found_var) = self.lookup_variable(name) {
+                        found_binding = Some(Rc::clone(&found_var.value));
+                    }
+
+                    // Update here
+                    if let Some(binding) = found_binding {
+                        // This whole process if way more complicated than you think due to possible handle dependencies
+                        // This checks if a dependency upon the variable value was placed
+                        self.track_dependency(DependencyKey::Binding(Rc::as_ptr(&binding) as usize));
+
+                        let val = binding.borrow().clone();
+                        match &val {
+                            // Same here for lists and dictionaries, though they got their own kind of Dependency Key
+                            Value::List(list) => self.track_dependency(DependencyKey::List(Rc::as_ptr(list) as usize)),
+                            Value::Dictionary(dictionary) => self.track_dependency(DependencyKey::Dictionary(Rc::as_ptr(dictionary) as usize)),
+
+                            // NOTE: Enums can't be changed after being defined, so no dependencies are ever placed upon them
+
+                            _ => {}
                         }
 
-                        // Update here
-                        if let Some(binding) = found_binding {
-                            // This whole process if way more complicated than you think due to possible handle dependencies
-                            // This checks if a dependency upon the variable value was placed
-                            self.track_dependency(DependencyKey::Binding(Rc::as_ptr(&binding) as usize));
-
-                            let val = binding.borrow().clone();
-                            match &val {
-                                // Same here for lists and dictionaries, though they got their own kind of Dependency Key
-                                Value::List(list) => self.track_dependency(DependencyKey::List(Rc::as_ptr(list) as usize)),
-                                Value::Dictionary(dictionary) => self.track_dependency(DependencyKey::Dictionary(Rc::as_ptr(dictionary) as usize)),
-
-                                // NOTE: Enums can't be changed after being defined, so no dependencies are ever placed upon them
-
-                                _ => {}
-                            }
-
-                            if let Value::Possible(possible) = &val {
-                                // If the possible is not evalutaed, place a dependency tracker upon it too
-                                if possible.borrow().current.is_none() {
-                                    self.track_dependency(DependencyKey::Possible(Rc::as_ptr(possible) as usize));
-                                    self.stack.push(val);
-                                }
-                                else {
-                                    // Push the possible. We'll have to unfortunately unwrap it ourselves else where
-                                    self.stack.push(Value::Possible(possible.clone()));
-                                }
-                            }
-                            else {
-                                // In the end, it will be pushed into the stack!
+                        if let Value::Possible(possible) = &val {
+                            // If the possible is not evalutaed, place a dependency tracker upon it too
+                            if possible.borrow().current.is_none() {
+                                self.track_dependency(DependencyKey::Possible(Rc::as_ptr(possible) as usize));
                                 self.stack.push(val);
                             }
-                        }
-                        // Check if it's an imported module
-                        else if self.modules.contains_key(name) {
-                            // Push a string value of the name onto the stack
-                            self.stack.push(Value::String(name.to_string()));
-                            ip += 1;
-                            continue;
+                            else {
+                                // Push the possible. We'll have to unfortunately unwrap it ourselves else where
+                                self.stack.push(Value::Possible(possible.clone()));
+                            }
                         }
                         else {
-                            // No variable found? Let's check enums now
-
-                            let mut found: Option<(&String, &EnumStructure)> = None;
-
-                            for enumerator in self.enums.iter() {
-                                if name == &enumerator.1.identifier {
-                                    found = Some(enumerator);
-                                }
-                            }
-
-                            if let Some(enum_found) = found {
-                                let enum_value: Value = Value::EnumDefinition(enum_found.1.clone());
-
-                                self.stack.push(enum_value);
-                            } else {
-                                panic!("[IP {:04}] Variable or Enum '{}' is not defined in any active scope.", ip, name);
-                            }
-
+                            // In the end, it will be pushed into the stack!
+                            self.stack.push(val);
                         }
+                    }
+                    // Check if it's an imported module
+                    else if self.modules.contains_key(name) {
+                        // Push a string value of the name onto the stack
+                        self.stack.push(Value::String(name.to_string()));
+                        ip += 1;
+                        continue;
+                    }
+                    else {
+                        // No variable found? Let's check enums now
+
+                        let mut found: Option<(&String, &EnumStructure)> = None;
+
+                        for enumerator in self.enums.iter() {
+                            if name == &enumerator.1.identifier {
+                                found = Some(enumerator);
+                            }
+                        }
+
+                        if let Some(enum_found) = found {
+                            let enum_value: Value = Value::EnumDefinition(enum_found.1.clone());
+
+                            self.stack.push(enum_value);
+                        } else {
+                            panic!("[IP {:04}] Variable or Enum '{}' is not defined in any active scope.", ip, name);
+                        }
+
                     }
                 }
 
-                "TemporaryLoad" => {
-                    // Check the operand
-                    if let Some(operand_json) = &instr.operand {
-                        let slot = operand_json.as_u64().expect("Slot for a Temporary Load must be a positive integer");
+                Op::TemporaryLoad(slot) => {
+                    // Get object
+                    let object = self.temporaries.get(slot);
 
-                        // Get object
-                        let object = self.temporaries.get(&slot);
-
-                        if let Some(obj) = object {
-                            // Push as a CLONE
-                            self.stack.push(obj.clone());
-                        } else {
-                            panic!("[IP {:04}] Attempted to load undefined temporary object of slot {}.", ip, slot)
-                        }
+                    if let Some(obj) = object {
+                        // Push as a CLONE
+                        self.stack.push(obj.clone());
+                    } else {
+                        panic!("[IP {:04}] Attempted to load undefined temporary object of slot {}.", ip, slot)
                     }
                 }
 
                 // Search from innermost to outermost scope and update an existing variable
-                "Update" => {
-                    if let Some(operand_json) = &instr.operand {
-                        let var_info: UpdateOperand = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid Update operand format");
-                        let new_val = self.stack.pop().unwrap_or(Value::Nil);
-                        let mut updated = false;
-                        let mut changed_binding = None;
+                Op::Update(var_info) => {
+                    let new_val = self.stack.pop().unwrap_or(Value::Nil);
+                    let mut updated = false;
+                    let mut changed_binding = None;
 
-                        for scope in self.scopes.iter_mut().rev() {
-                            if scope.contains_key(&var_info.name) {
-                                let entry = Arc::make_mut(scope)
-                                    .get_mut(&var_info.name)
-                                    .expect("The scope was checked to contain a variable entry, but an error occured");
+                    for scope in self.scopes.iter_mut().rev() {
+                        if scope.contains_key(&var_info.name) {
+                            let entry: &mut VariableEntry = Arc::make_mut(scope)
+                                .get_mut(&var_info.name)
+                                .expect("The scope was checked to contain a variable entry, but an error occured");
 
-                                // A fixed variable? Gotta fix this one!
-                                if entry.modifiers.contains(&String::from("fixed")) {
-                                    panic!("Cannot modify a fixed variable")
-                                }
-
-                                // Type safety
-                                if let Some(ensurable) = &entry.max_type {
-                                    MaxType::ensure_compatibility(ensurable, &new_val);
-                                }
-
-                                // Easy reference ip here
-                                let easy_ip_ref = Some(Value::Integer(ip as i64));
-
-                                // The variations of updating here too
-                                let old_value = entry.value.borrow().clone();
-                                let updated_value = match var_info.operation.as_str() {
-                                    "=" => new_val,
-                                    "+=" => VirtualMachine::add_values(&old_value, &new_val, easy_ip_ref),
-                                    "-=" => VirtualMachine::subtract_values(&old_value, &new_val, easy_ip_ref),
-                                    "*=" => VirtualMachine::multiply_values(&old_value, &new_val, easy_ip_ref),
-                                    "/=" => VirtualMachine::divide_values(&old_value, &new_val, easy_ip_ref),
-                                    "%=" => Self::modulo_values(&old_value, &new_val, easy_ip_ref),
-
-                                    _ => panic!("Unknown operation for updating given: {}", var_info.operation)
-                                };
-
-                                // Also check for the resort value if needed
-                                let final_val = if updated_value == Value::Nil {
-                                    entry.resort_value.clone().unwrap_or(Value::Nil)
-                                } else {
-                                    updated_value
-                                };
-
-                                // Don't worry, the function itself allows duplicates when the dictionary says so
-                                final_val.ensure_no_duplicate_keys();
-
-                                // Set the value as the updated, blah blah.
-                                *entry.value.borrow_mut() = final_val;
-                                // Create a binding to this updated value, so we can update our dependency trackers via
-                                changed_binding = Some(Rc::as_ptr(&entry.value) as usize);
-
-                                updated = true;
-                                break;
+                            // A fixed variable? Gotta fix this one!
+                            if entry.modifiers.fixed {
+                                panic!("Cannot modify a fixed variable")
                             }
-                        }
 
-                        if !updated {
-                            panic!("[IP {:04}] Cannot update undefined variable '{}'", ip, var_info.name);
-                        }
+                            // Type safety
+                            if let Some(ensurable) = &entry.max_type {
+                                Self::ensure_compatibility(ensurable, &new_val);
+                            }
 
-                        // Check em trackers like some kind of dog collar!
-                        if let Some(binding_id) = changed_binding {
-                            self.notify_dependency(DependencyKey::Binding(binding_id));
+                            // Easy reference ip here
+                            let easy_ip_ref = Some(Value::Integer(ip as i64));
+
+                            // The variations of updating here too
+                            let old_value = entry.value.borrow().clone();
+                            let updated_value = match var_info.operation {
+                                UpdateOperation::Assign => new_val,
+                                UpdateOperation::Add => VirtualMachine::add_values(&old_value, &new_val, easy_ip_ref),
+                                UpdateOperation::Subtract => VirtualMachine::subtract_values(&old_value, &new_val, easy_ip_ref),
+                                UpdateOperation::Multiply => VirtualMachine::multiply_values(&old_value, &new_val, easy_ip_ref),
+                                UpdateOperation::Divide => VirtualMachine::divide_values(&old_value, &new_val, easy_ip_ref),
+                                UpdateOperation::Modulus => Self::modulo_values(&old_value, &new_val, easy_ip_ref),
+                            };
+
+                            // Also check for the resort value if needed
+                            let final_val = if updated_value == Value::Nil {
+                                Value::from_const(&entry.resort_value.clone().unwrap_or(ConstValue::Nil))
+                            } else {
+                                updated_value
+                            };
+
+                            // Don't worry, the function itself allows duplicates when the dictionary says so
+                            final_val.ensure_no_duplicate_keys();
+
+                            // Set the value as the updated, blah blah.
+                            *entry.value.borrow_mut() = final_val;
+                            // Create a binding to this updated value, so we can update our dependency trackers via
+                            changed_binding = Some(Rc::as_ptr(&entry.value) as usize);
+
+                            updated = true;
+                            break;
                         }
+                    }
+
+                    if !updated {
+                        panic!("[IP {:04}] Cannot update undefined variable '{}'", ip, var_info.name);
+                    }
+
+                    // Check em trackers like some kind of dog collar!
+                    if let Some(binding_id) = changed_binding {
+                        self.notify_dependency(DependencyKey::Binding(binding_id));
                     }
                 }
 
-                "Index" => {
+                Op::Index => {
                     // Index value -> Target to index
                     if let Some(index) = self.stack.pop() {
                         if let Some(target) = self.stack.pop() {
@@ -1469,27 +1126,22 @@ impl VirtualMachine {
                     }
                 }
 
-                "UpdateIndex" => {
+                Op::UpdateIndex(operand) => {
                     // We pop the values in this order
                     // Value to update with -> Index value -> Target to index and update
 
                     // Clean way of popping the stack thrice
                     match (self.stack.pop(), self.stack.pop(), self.stack.pop()) {
                         (Some(value), Some(index), Some(target)) => {
-                            if let Some(operand_json) = &instr.operand {
-                                let operand: UpdateIndexOperand = serde_json::from_value(operand_json.clone())
-                                    .expect("Invalid UpdateIndexOperand");
+                            let observed_target = target.clone();
+                            let updated_target = VirtualMachine::eval_update_indexing(index, target, value, operand.operation)
+                                                            .expect("Evaluation of updating an index expected an error.");
 
-                                let observed_target = target.clone();
-                                let updated_target = VirtualMachine::eval_update_indexing(index, target, value, &operand.operation)
-                                                                .expect("Evaluation of updating an index expected an error.");
-
-                                // Keep in mind that indexing only applies to collections, so we just run this!
-                                self.notify_collection_changed(&observed_target);
-                                                            
-                                if let Some(target_name) = operand.target_name {
-                                    self.update_variable_value(target_name, updated_target);
-                                }
+                            // Keep in mind that indexing only applies to collections, so we just run this!
+                            self.notify_collection_changed(&observed_target);
+                                                        
+                            if let Some(target_name) = operand.target_name.clone() {
+                                self.update_variable_value(target_name, updated_target);
                             }
                         }
 
@@ -1500,122 +1152,113 @@ impl VirtualMachine {
                     }
                 }
 
-                "ForeachNext" => {
-                    if let Some(operand_json) = &instr.operand {
-                        let operand: ForeachOperand = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid ForeachNext operand format");
+                Op::ForeachNext(operand) => {
+                    // Attempt to get the temporary index slot
+                    let index = match self.temporaries.get(&operand.index_slot) {
+                        Some(Value::Integer(i)) => *i as usize,
+                        _ => panic!("Foreach index was not initialized"),
+                    };
 
-                        // Attempt to get the temporary index slot
-                        let index = match self.temporaries.get(&operand.index_slot) {
-                            Some(Value::Integer(i)) => *i as usize,
-                            _ => panic!("Foreach index was not initialized"),
-                        };
-
-                        // In the collection slot (where the iterable is), attempt to borrow it's count and get the item from the current index (the start)
-                        let (item_count, current_item) = match self.temporaries.get(&operand.collection_slot) {
-                            Some(Value::List(list)) => {
-                                let list = list.borrow();
-                                (list.items.len(), list.items.get(index).cloned())
-                            }
-
-                            Some(Value::Dictionary(dictionary)) => {
-                                let dictionary = dictionary.borrow();
-                                if dictionary.keys.len() != dictionary.values.len() {
-                                    panic!("Key/Value count mismatch in dictionary iteration.");
-                                }
-                                
-                                // This *simply* gets all the keys and values, and maps them into a list of key-value pairs!
-                                let current_item = dictionary.keys
-                                    .get(index).zip(dictionary.values.get(index))
-                                    .map(|(key, value)| Value::new_list(None, vec![key.clone(), value.clone()]));
-
-                                (dictionary.keys.len(), current_item)
-                            }
-
-                            Some(Value::String(str)) => {
-                                // Remember to return the character count, not bits length!
-                                let char_found = str.chars().nth(index).unwrap_or(' ');
-                                (str.chars().count(), Some(Value::String(char_found.to_string())))
-                            }
-
-                            _ => panic!("Can only iterate over an iterable collection"),
-                        };
-
-                        if index >= item_count {
-                            // We finished? Push false to signify the end of the loop
-                            self.stack.push(Value::Boolean(false));
-                        } else {
-                            // Erring is more useful than unwrapping a default
-                            let current_item = current_item.expect("Foreach item should exist for an in-range index");
-
-                            // --- MULTI-VARIABLE UNPACKING ---
-                            // We go through each declaration item
-                            for (var_idx, var_name) in operand.declarations.iter().enumerate() {
-                                // Determine the value for this specific variable
-                                let val_to_assign = match &current_item {
-
-                                    // If the current item is a List/Tuple, extract the matching element index (determined by the for loop!)
-                                    Value::List(inner_list) => {
-                                        let inner = inner_list.borrow();
-                                        inner.items.get(var_idx).cloned().unwrap_or(Value::Nil)
-                                    }
-
-                                    // Otherwise assign the raw item to the first variable
-                                    _ => if var_idx == 0 { current_item.clone() } else { Value::Nil }
-                                };
-
-                                // Scope resolution & Variable assignment
-                                let mut var_scope_idx = None;
-                                for (idx, scope) in self.scopes.iter().enumerate().rev() {
-                                    if scope.contains_key(var_name) {
-                                        var_scope_idx = Some(idx);
-                                        break;
-                                    }
-                                }
-
-                                let scope_idx = var_scope_idx.unwrap_or_else(|| {
-                                    panic!("Variable was not defined yet: {}", var_name)
-                                });
-
-                                let mut_scope = Arc::make_mut(&mut self.scopes[scope_idx]);
-
-                                // Set either to the variable if it's already been declared, or create a new one for it
-                                let changed_binding = if let Some(entry) = mut_scope.get_mut(var_name) {
-                                    *entry.value.borrow_mut() = val_to_assign;
-                                    Some(Rc::as_ptr(&entry.value) as usize)
-                                } else {
-                                    mut_scope.insert(
-                                        var_name.clone(),
-                                        // BTW, you'll especially see empty modifiers given to Variable entries, as they only apply to declarations
-                                        VariableEntry::new(val_to_assign, vec![], operand.variable_type.clone(), None),
-                                    );
-                                    None
-                                };
-
-                                // Notify dependencies for reactive/possible bindings
-                                if let Some(binding_id) = changed_binding {
-                                    self.notify_dependency(DependencyKey::Binding(binding_id));
-                                }
-                            }
-
-                            // Increment loop index in temporaries
-                            self.temporaries.insert(
-                                operand.index_slot,
-                                Value::Integer((index + 1) as i64),
-                            );
-
-                            // Once finished with this, we push true to signify the continuation of the loop!
-                            self.stack.push(Value::Boolean(true));
+                    // In the collection slot (where the iterable is), attempt to borrow it's count and get the item from the current index (the start)
+                    let (item_count, current_item) = match self.temporaries.get(&operand.collection_slot) {
+                        Some(Value::List(list)) => {
+                            let list = list.borrow();
+                            (list.items.len(), list.items.get(index).cloned())
                         }
-                    }
-                    // Panicking to help us identify errors
-                    else {
-                        panic!("Attempted to get a ForeachNext Operand, got None")
+
+                        Some(Value::Dictionary(dictionary)) => {
+                            let dictionary = dictionary.borrow();
+                            if dictionary.keys.len() != dictionary.values.len() {
+                                panic!("Key/Value count mismatch in dictionary iteration.");
+                            }
+                            
+                            // This *simply* gets all the keys and values, and maps them into a list of key-value pairs!
+                            let current_item = dictionary.keys
+                                .get(index).zip(dictionary.values.get(index))
+                                .map(|(key, value)| Value::new_list(None, vec![key.clone(), value.clone()]));
+
+                            (dictionary.keys.len(), current_item)
+                        }
+
+                        Some(Value::String(str)) => {
+                            // Remember to return the character count, not bits length!
+                            let char_found = str.chars().nth(index).unwrap_or(' ');
+                            (str.chars().count(), Some(Value::String(char_found.to_string())))
+                        }
+
+                        _ => panic!("Can only iterate over an iterable collection"),
+                    };
+
+                    if index >= item_count {
+                        // We finished? Push false to signify the end of the loop
+                        self.stack.push(Value::Boolean(false));
+                    } else {
+                        // Erring is more useful than unwrapping a default
+                        let current_item = current_item.expect("Foreach item should exist for an in-range index");
+
+                        // --- MULTI-VARIABLE UNPACKING ---
+                        // We go through each declaration item
+                        for (var_idx, var_name) in operand.declarations.iter().enumerate() {
+                            // Determine the value for this specific variable
+                            let val_to_assign = match &current_item {
+
+                                // If the current item is a List/Tuple, extract the matching element index (determined by the for loop!)
+                                Value::List(inner_list) => {
+                                    let inner = inner_list.borrow();
+                                    inner.items.get(var_idx).cloned().unwrap_or(Value::Nil)
+                                }
+
+                                // Otherwise assign the raw item to the first variable
+                                _ => if var_idx == 0 { current_item.clone() } else { Value::Nil }
+                            };
+
+                            // Scope resolution & Variable assignment
+                            let mut var_scope_idx = None;
+                            for (idx, scope) in self.scopes.iter().enumerate().rev() {
+                                if scope.contains_key(var_name) {
+                                    var_scope_idx = Some(idx);
+                                    break;
+                                }
+                            }
+
+                            let scope_idx = var_scope_idx.unwrap_or_else(|| {
+                                panic!("Variable was not defined yet: {}", var_name)
+                            });
+
+                            let mut_scope = Arc::make_mut(&mut self.scopes[scope_idx]);
+
+                            // Set either to the variable if it's already been declared, or create a new one for it
+                            let changed_binding = if let Some(entry) = mut_scope.get_mut(var_name) {
+                                *entry.value.borrow_mut() = val_to_assign;
+                                Some(Rc::as_ptr(&entry.value) as usize)
+                            } else {
+                                mut_scope.insert(
+                                    var_name.clone(),
+                                    // BTW, you'll especially see empty modifiers given to Variable entries, as they only apply to declarations
+                                    VariableEntry::new(val_to_assign, Modifiers::e_new(), operand.variable_type.clone(), None),
+                                );
+                                None
+                            };
+
+                            // Notify dependencies for reactive/possible bindings
+                            if let Some(binding_id) = changed_binding {
+                                self.notify_dependency(DependencyKey::Binding(binding_id));
+                            }
+                        }
+
+                        // Increment loop index in temporaries
+                        self.temporaries.insert(
+                            operand.index_slot,
+                            Value::Integer((index + 1) as i64),
+                        );
+
+                        // Once finished with this, we push true to signify the continuation of the loop!
+                        self.stack.push(Value::Boolean(true));
                     }
                 }
 
                 // Legit just say something. Like what else
-                "Say" => {
+                Op::Say => {
                     if let Some(val) = &self.stack.pop() {
                         println!("{}", val);
                     }
@@ -1629,7 +1272,7 @@ impl VirtualMachine {
                 */
 
 
-                "Add" => {
+                Op::Add => {
                     // We are popping from the stack, so the right value comes first!
                     let right = self.stack.pop().unwrap_or(Value::Nil);
                     let left = self.stack.pop().unwrap_or(Value::Nil);
@@ -1639,7 +1282,7 @@ impl VirtualMachine {
                     self.stack.push(result);
                 }
 
-                "Subtract" => {
+                Op::Subtract => {
                     let right = self.stack.pop().unwrap_or(Value::Nil);
                     let left = self.stack.pop().unwrap_or(Value::Nil);
 
@@ -1648,7 +1291,7 @@ impl VirtualMachine {
                     self.stack.push(result);
                 }
 
-                "Multiply" => {
+                Op::Multiply => {
                     let right = self.stack.pop().unwrap_or(Value::Nil);
                     let left = self.stack.pop().unwrap_or(Value::Nil);
 
@@ -1657,7 +1300,7 @@ impl VirtualMachine {
                     self.stack.push(result);
                 }
 
-                "Divide" => {
+                Op::Divide => {
                     let right = self.stack.pop().unwrap_or(Value::Nil);
                     let left = self.stack.pop().unwrap_or(Value::Nil);
 
@@ -1666,7 +1309,7 @@ impl VirtualMachine {
                     self.stack.push(result);
                 }
 
-                "Modulus" => {
+                Op::Modulus => {
                     let right = self.stack.pop().unwrap_or(Value::Nil);
                     let left = self.stack.pop().unwrap_or(Value::Nil);
 
@@ -1675,19 +1318,17 @@ impl VirtualMachine {
                     self.stack.push(result);
                 }
 
-                "Compare" => {
+                Op::Compare(operand) => {
                     let right = self.stack.pop().unwrap_or(Value::Nil);
                     let left = self.stack.pop().unwrap_or(Value::Nil);
 
-                    if let Some(operator) = &instr.operand {
-                        // Represent as  string, else just blank
-                        let str_oper = operator.as_str().unwrap_or("");
+                    // Represent as  string, else just blank
+                    let str_oper = operand;
 
-                        let result = Self::eval_comparison(str_oper, left, right);
+                    let result = Self::eval_comparison(str_oper, left, right);
 
-                        // Use evaluated value to push in the boolean(-like)!
-                        self.stack.push(result);
-                    }
+                    // Use evaluated value to push in the boolean(-like)!
+                    self.stack.push(result);
                 }
 
 
@@ -1698,7 +1339,7 @@ impl VirtualMachine {
                 */
 
 
-                "Not" => {
+                Op::Not => {
                     if let Some(val) = self.stack.pop() {
                         // Simply inverse value depending on what value we are performing upon
                         match val {
@@ -1719,7 +1360,7 @@ impl VirtualMachine {
                     }
                 }
 
-                "Negate" => {
+                Op::Negate => {
                     if let Some(val) = self.stack.pop() {
                         // For now, negation only applies to numbers
                         match val {
@@ -1731,6 +1372,17 @@ impl VirtualMachine {
                     }
                 }
 
+                Op::And => {
+                    let right = self.stack.pop().unwrap_or(Value::Nil);
+                    let left = self.stack.pop().unwrap_or(Value::Nil);
+                    self.stack.push(Value::logical_and(&left, &right));
+                }
+                Op::Or => {
+                    let right = self.stack.pop().unwrap_or(Value::Nil);
+                    let left = self.stack.pop().unwrap_or(Value::Nil);
+                    self.stack.push(Value::logical_or(&left, &right));
+                }
+
 
                 /*
                  -------------------
@@ -1739,150 +1391,95 @@ impl VirtualMachine {
                 */
 
 
-                "Call" => {
-                    if let Some(operand_json) = &instr.operand {
-                        let call: TaskCallOperand = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid TaskCallOperand attached to Call Instruction!");
-
-                        // If there is no target, we search through the scopes to check if a lambda of matching name exists
-                        // From there, lambda is given a lambda value. Otherwise None
-                        let lambda = if call.target.is_none() {
-                            self.scopes.iter().rev().find_map(|scope| {
-                                scope.get(&call.name).and_then(|entry| match &*entry.value.borrow() {
-                                    Value::Lambda(lambda) => Some(lambda.clone()),
-                                    
-                                    _ => None,
-                                })
+                Op::Call(call) => {
+                    // If there is no target, we search through the scopes to check if a lambda of matching name exists
+                    // From there, lambda is given a lambda value. Otherwise None
+                    let lambda = if call.target.is_none() {
+                        self.scopes.iter().rev().find_map(|scope| {
+                            scope.get(&call.name).and_then(|entry| match &*entry.value.borrow() {
+                                Value::Lambda(lambda) => Some(lambda.clone()),
+                                
+                                _ => None,
                             })
-                        } else {
-                            None
+                        })
+                    } else {
+                        None
+                    };
+
+                    // If a lambda exists
+                    if let Some(lambda) = lambda {
+                        // Using it's metadata, we ensure the number of arguments is equal to the lambdas parameter count (arity)
+                        let definition = &lambda.definition;
+                        if call.argument_count != definition.arity {
+                            panic!("Lambda '{}' expects {} arguments, but {} were provided", call.name, definition.arity, call.argument_count);
+                        }
+
+                        // Get the arguments
+                        let mut arguments = Vec::with_capacity(call.argument_count as usize);
+                        for _ in 0..call.argument_count {
+                            arguments.push(self.stack.pop().unwrap_or_else(|| panic!("Not enough arguments provided to lambda '{}'", call.name)));
+                        }
+                        arguments.reverse(); // You should know why by now...
+
+                        let parameter_names = if definition.parameters.len() == definition.arity as usize {
+                            // When the parameters are explicitly defined, simply clone them
+                            definition.parameters.clone()
+                        }
+                        else {
+                            panic!("Lambda '{}' must provide parameter names for its arity", call.name);
                         };
 
-                        // If a lambda exists
-                        if let Some(lambda) = lambda {
-                            // Using it's metadata, we ensure the number of arguments is equal to the lambdas parameter count (arity)
-                            let definition = &lambda.definition;
-                            if call.argument_count != definition.arity {
-                                panic!("Lambda '{}' expects {} arguments, but {} were provided", call.name, definition.arity, call.argument_count);
-                            }
-
-                            // Get the arguments
-                            let mut arguments = Vec::with_capacity(call.argument_count as usize);
-                            for _ in 0..call.argument_count {
-                                arguments.push(self.stack.pop().unwrap_or_else(|| panic!("Not enough arguments provided to lambda '{}'", call.name)));
-                            }
-                            arguments.reverse(); // You should know why by now...
-
-                            let parameter_names = if definition.parameters.len() == definition.arity as usize {
-                                // When the parameters are explicitly defined, simply clone them
-                                definition.parameters.clone()
-                            }
-                            else if definition.parameters.is_empty() && definition.arity == 1 {
-                                /*
-                                    If the parameter was not declared explicitly, but one parameter was expected
-                                    Look through the instructions to find the first 'Load' instruction
-                                    From the load instruction, obtain the name of the Load Instruction (the operand)
-                                    Assign that name as the parameter name!
-                                */
-                                definition.chunk.instructions.iter().find_map(|instruction| {
-                                    if instruction.op_code == "Load" {
-                                        instruction.operand.as_ref()
-                                            .and_then(serde_json::Value::as_str)
-                                            .filter(|name| !lambda.captures.contains_key(*name))
-                                            .map(str::to_owned)
-                                    }
-                                    else {
-                                        // Or not I guess
-                                        None
-                                    }
-                                }).into_iter().collect() // Put into a Vector
-                            }
-                            else {
-                                panic!("Lambda '{}' must provide parameter names for its arity", call.name);
-                            };
-
-                            // Check!
-                            if parameter_names.len() != arguments.len() {
-                                panic!("Could not determine parameter names for lambda '{}'", call.name);
-                            }
-
-                            let mut parameters: HashMap<String, VariableEntry> = HashMap::new();
-
-                            for (name, argument) in parameter_names.into_iter().zip(arguments) {
-                                // All the parameters inputted are also inserted into the callscope as declared variables
-                                parameters.insert(name, VariableEntry::new(
-                                    argument, vec![], None, None )
-                                );
-                            }
-
-                            // Push into the callstack a new LAMBDA call
-                            // This is identifiable by how there is no task info, and the is_lambda bool is marked true!
-                            self.call_stack.push(CallFrame {
-                                task_info: None,
-                                coroutine_instance: None,
-                                return_ip: ip + 1,
-                                return_instructions: Arc::clone(&active_instructions),
-                                is_lambda: true,
-                                scope_depth: self.scopes.len(),
-                                module_name: self.module_name.clone()
-                            });
-                            // We push the captures and the params as seperate scopes
-                            // Don't worry, the scope-depth cleanup logic will take them both out!
-                            self.scopes.push(lambda.captures);
-                            self.scopes.push(Arc::new(parameters));
-
-                            // We set the current ACTIVE instructions as the lambda chunks instructions
-                            // Keep in mind that when the lambda is finished, the instructions return to the normal bytecode!
-                            active_instructions = definition.chunk.instructions.clone();
-                            self.active_instructions = Arc::clone(&active_instructions);
-                            ip = 0;
-
-                            continue;
+                        // Check!
+                        if parameter_names.len() != arguments.len() {
+                            panic!("Could not determine parameter names for lambda '{}'", call.name);
                         }
-                        
-                        // Calling a user defined task via a module name
-                        if let Some(ref target_module_name) = call.target {
-                            if let Some(task) = bytecode.tasks.get(&call.name).cloned() {
-                                self.invoke_task(
-                                    task,
-                                    target_module_name,
-                                    call.argument_count,
-                                    &mut ip,
-                                    &mut active_instructions,
-                                );
-                                continue;
-                            }
 
-                            // Fallback to Native Module Call if target isn't a user module or task wasn't found
-                            let mut control_transferred = false;
-                            let native_res = self.invoke_native(
-                                call,
-                                &mut ip,
-                                &mut active_instructions,
-                                &mut control_transferred,
+                        let mut parameters: HashMap<String, VariableEntry> = HashMap::new();
+
+                        for (name, argument) in parameter_names.into_iter().zip(arguments) {
+                            // All the parameters inputted are also inserted into the callscope as declared variables
+                            parameters.insert(name, VariableEntry::new(
+                                argument, Modifiers::e_new(), None, None )
                             );
+                        }
 
-                            if control_transferred {
-                                continue;
-                            }
-                            self.stack.push(native_res);
-                            ip += 1;
+                        // Push into the callstack a new LAMBDA call
+                        // This is identifiable by how there is no task info, and the is_lambda bool is marked true!
+                        self.call_stack.push(CallFrame {
+                            task_info: None,
+                            coroutine_instance: None,
+                            return_ip: ip + 1,
+                            return_instructions: Arc::clone(&active_instructions),
+                            is_lambda: true,
+                            scope_depth: self.scopes.len(),
+                            module_name: self.module_name.clone()
+                        });
+                        // We push the captures and the params as seperate scopes
+                        // Don't worry, the scope-depth cleanup logic will take them both out!
+                        self.scopes.push(lambda.captures);
+                        self.scopes.push(Arc::new(parameters));
+
+                        // We set the current ACTIVE instructions as the lambda chunks instructions
+                        // Keep in mind that when the lambda is finished, the instructions return to the normal bytecode!
+                        active_instructions = definition.chunk.instructions.clone();
+                        self.active_instructions = Arc::clone(&active_instructions);
+                        ip = 0;
+
+                        continue;
+                    }
+                    
+                    // Calling a user defined task via a module name
+                    if let Some(ref target_module_name) = call.target {
+                        let task = self.modules.get(target_module_name)
+                            .and_then(|module| module.tasks.get(&call.name))
+                            .cloned();
+
+                        if let Some(task) = task {
+                            self.invoke_task(task, target_module_name, call.argument_count, &mut ip, &mut active_instructions);
                             continue;
                         }
 
-                        // Local Task in the same file
-                        if let Some(task) = self.task_definitions.get(&call.name).cloned() {
-                            self.invoke_task( 
-                                task,
-                                &self.module_name.to_string(),
-                                call.argument_count,
-                                &mut ip,
-                                &mut active_instructions
-                            );
-                            continue;
-                        }
-
-                        // 4. Native Unqualified Call Fallback
+                        // Fallback to Native Module Call if target isn't a user module or task wasn't found
                         let mut control_transferred = false;
                         let native_res = self.invoke_native(
                             call,
@@ -1898,25 +1495,45 @@ impl VirtualMachine {
                         ip += 1;
                         continue;
                     }
+
+                    // Local Task in the same file
+                    if let Some(task) = self.task_definitions.get(&call.name).cloned() {
+                        self.invoke_task( 
+                            task,
+                            &self.module_name.to_string(),
+                            call.argument_count,
+                            &mut ip,
+                            &mut active_instructions
+                        );
+                        continue;
+                    }
+
+                    // 4. Native Unqualified Call Fallback
+                    let mut control_transferred = false;
+                    let native_res = self.invoke_native(
+                        call,
+                        &mut ip,
+                        &mut active_instructions,
+                        &mut control_transferred,
+                    );
+
+                    if control_transferred {
+                        continue;
+                    }
+                    self.stack.push(native_res);
+                    ip += 1;
+                    continue;
                 }
 
-                "CallNative" => {
-                    if let Some(operand_json) = &instr.operand {
-                        let call: TaskCallOperand = serde_json::from_value(operand_json.clone())
-                            .expect("Invalid TaskCallOperand for CallNative");
+                Op::CallNative(call) => {
+                    // Tells us if a control transfer occurred (e.g. a coroutine method being called)
+                    let mut control_transferred = false;
+                    let result = self.invoke_native(call, &mut ip, &mut active_instructions, &mut control_transferred);
 
-                        // Tells us if a control transfer occurred (e.g. a coroutine method being called)
-                        let mut control_transferred = false;
-                        let result = self.invoke_native(call, &mut ip, &mut active_instructions, &mut control_transferred);
-
-                        // If the 
-                        if control_transferred {
-                            continue;
-                        }
-                        self.stack.push(result);
-                    } else {
-                        panic!("[IP {:04}] Operand for CallNative is required.", ip);
+                    if control_transferred {
+                        continue;
                     }
+                    self.stack.push(result);
                 }
 
 
@@ -1927,69 +1544,55 @@ impl VirtualMachine {
                 */
 
 
-                "Jump" => {
-                    if let Some(jump_to) = &instr.operand {
-                        if let Some(jump_u) = jump_to.as_u64() {
-                            ip = jump_u as usize;
-                            continue; // We skip incremembting ip! This goes for the other jumps
-                        }
-                    }
+                Op::Jump(jump_to) => {
+                    ip = *jump_to;
+                    continue; // We skip incremembting ip! This goes for the other jumps
                 }
 
                 // This checks for the condition before it to check if it can jump or not
-                "JumpIfFalse" => {
-                    if let Some(jump_to) = &instr.operand {
-                        let condition = self.stack.pop().unwrap_or(Value::Nil);
-                        
-                        match condition {
-                            // When false, DUH. Oh and nil I guess...
-                            Value::Boolean(false) | Value::Nil => {
-                                if let Some(jumpif_u) = jump_to.as_u64() {
-                                    ip = jumpif_u as usize;
-                                    continue;
-                                }
-                            }
-
-                            // Gotta handle em possible situations too!
-                            Value::Possible(possible) => {
-                                let possible = possible.borrow();
-                                if let Some(boolean) = possible.current && boolean == false && let Some(jumpif_u) = jump_to.as_u64() {
-                                    ip = jumpif_u as usize;
-                                    continue;
-                                }
-                            }
-
-                            _ => () // You can't *break*, that'd break out the entire VM loop!
+                Op::JumpIfFalse(jump_to) => {
+                    let condition = self.stack.pop().unwrap_or(Value::Nil);
+                    
+                    match condition {
+                        // When false, DUH. Oh and nil I guess...
+                        Value::Boolean(false) | Value::Nil => {
+                            ip = *jump_to;
+                            continue;
                         }
-                    }
-                }
-                
-                // Same here!
-                "JumpIfPossible" => {
-                    if let Some(jump_to) = &instr.operand {
-                        let condition = self.stack.pop().unwrap_or(Value::Nil);
 
-                        let should_jump = match &condition {
-                            Value::Boolean(false) | Value::Nil => true,
-
-                            Value::Possible(possible) => {
-                                let possible = possible.borrow();
-                                matches!(possible.current, Some(false))
-                            }
-
-                            _ => false, // Truthy booleans or unresolved Possibles do NOT jump
-                        };
-
-                        if should_jump {
-                            if let Some(jumpif_u) = jump_to.as_u64() {
-                                ip = jumpif_u as usize;
+                        // Gotta handle em possible situations too!
+                        Value::Possible(possible) => {
+                            let possible = possible.borrow();
+                            if let Some(boolean) = possible.current && boolean == false{
+                                ip = *jump_to;
                                 continue;
                             }
                         }
 
-                        // Else just push the value back for reinspection by JumpIfFalse
-                        self.stack.push(condition);
+                        _ => () // You can't *break*, that'd break out the entire VM loop!
                     }
+                }
+                
+                // Same here!
+                Op::JumpIfPossible(jump_to) => {
+                    let condition = self.stack.pop().unwrap_or(Value::Nil);
+
+                    let should_jump = match &condition {
+                        Value::Possible(possible) => {
+                            let possible = possible.borrow();
+                            matches!(possible.current, None) // Jump if not resolved
+                        }
+
+                        _ => false, // Otherwise meh
+                    };
+
+                    if should_jump {
+                        ip = *jump_to;
+                        continue;
+                    }
+
+                    // Else just push the value back for reinspection by JumpIfFalse
+                    self.stack.push(condition);
                 }
 
 
@@ -2000,14 +1603,14 @@ impl VirtualMachine {
                 */
 
                 
-                "Return" => {
+                Op::Return => {
                     // Return with no value
                     self.return_from_task(None, &mut ip, &mut active_instructions);
 
                     continue; // Continuing prevents the code from advancing the ip further out than it needs to
                 }
 
-                "ReturnValue" => {
+                Op::ReturnValue => {
                     // This one should have a value trailing it
                     let return_value = self.stack.pop();
                     self.return_from_task(return_value, &mut ip, &mut active_instructions);
@@ -2015,7 +1618,7 @@ impl VirtualMachine {
                     continue;
                 }
 
-                "Yield" => {
+                Op::Yield => {
                     // Get it like the returnable value. All Yields return a nil before them if no value is passed through them
                     let yielded_value = self.stack.pop();
 
@@ -2030,20 +1633,9 @@ impl VirtualMachine {
                     }
                 }
 
-                "Throw" => {
-                    if let Some(operand) = &instr.operand {
-                        // Try and get the message attached to the C# Exception sent
-                        if let Some(err_message) = operand.get("Message") {
-                            panic!("{}", err_message);
-                        }
-                        else {
-                            // Panicking when the point of this code is to panic. How ironic!
-                            panic!("No error message attached to exception when throwing! Could not find traceback.")
-                        }
-                    }
+                Op::Throw(message) => {
+                    panic!("{}", message);
                 }
-
-                unknown => eprintln!("[IP {:04}] Unhandled OpCode: {}", ip, unknown),
             }
 
             ip += 1; // To next instruction
@@ -2054,38 +1646,16 @@ impl VirtualMachine {
         }
     }
 
+    /// Loads the `VirtualMachine` modules with the given modules Hashmap
+    pub fn load_program(&mut self, modules: HashMap<String, Bytecode>) {
+        self.modules = Arc::new(modules);
+    }
+
     /*
      ------------------------
      --- HELPER FUNCTIONS ---
      ------------------------
     */
-
-    /// Loads all JSON files inside a given directory into the VM module map
-    pub fn load_modules_from_dir(&mut self, dir_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        for entry in std::fs::read_dir(dir_path)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            // When a json file, extract the stem name, then give it to the modules list
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                let module_name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .ok_or("Invalid file name")?
-                    .to_string();
-                
-                let json_data = std::fs::read_to_string(&path)?;
-
-                let module: Bytecode = serde_json::from_str(&json_data)?;
-
-                let modules: &mut HashMap<String, Bytecode> = Arc::make_mut(&mut self.modules);
-
-                // Insert data in!
-                modules.insert(module_name, module);
-            }
-        }
-        Ok(())
-    }
 
     /**
     Looks up the VM scopestack from the top for the first variable that matches the given name.
@@ -2153,14 +1723,12 @@ impl VirtualMachine {
         target.enum_members.iter().find(|m| m.name == name).cloned()
     }
 
-    pub fn eval_comparison(operation: &str, left: Value, right: Value) -> Value {
+    pub fn eval_comparison(operation: &CompareOp, left: Value, right: Value) -> Value {
         match operation {
-            "==" => left.evaluate_equal(&right),
-            "!=" => left.evaluate_not_equal(&right),
+            CompareOp::Equal => left.evaluate_equal(&right),
+            CompareOp::NotEqual => left.evaluate_not_equal(&right),
             
-            ">" | ">=" | "<" | "<=" => left.evaluate_relational(operation, &right),
-
-            _ => panic!("Unknown comparison operator: {}", operation),
+            CompareOp::Greater | CompareOp::GreaterEqual | CompareOp::Lesser | CompareOp::LesserEqual => left.evaluate_relational(operation, &right)
         }
     }
 
@@ -2178,7 +1746,7 @@ impl VirtualMachine {
 
     pub fn eval_indexing(index: Value, target: Value) -> Value {
         match target {
-            List(list_vals) => {
+            Value::List(list_vals) => {
                 let list = list_vals.borrow();
                 let items = &list.items;
 
@@ -2255,7 +1823,7 @@ impl VirtualMachine {
 
     /// Evaluates an index value on the target, then proceeds to update said index with the given value depending on the operation type given
     pub fn eval_update_indexing(index: Value, mut target: Value,
-                                value: Value, operation: &str)
+                                value: Value, operation: UpdateOperation)
                                 -> Result<Value, String> {
         match target {
             Value::List(ref list) => {
@@ -2288,13 +1856,12 @@ impl VirtualMachine {
                 let current_val = &list.items[actual_index];
 
                 let new_val = match operation {
-                    "=" => value,
-                    "+=" => Self::add_values(current_val, &value, None),
-                    "-=" => Self::subtract_values(current_val, &value, None),
-                    "*=" => Self::multiply_values(current_val, &value, None),
-                    "/=" => Self::divide_values(current_val, &value, None),
-                    "%=" => Self::modulo_values(current_val, &value, None),
-                    _ => return Err(format!("Unknown operation: {}", operation)),
+                    UpdateOperation::Assign => value,
+                    UpdateOperation::Add => Self::add_values(current_val, &value, None),
+                    UpdateOperation::Subtract => Self::subtract_values(current_val, &value, None),
+                    UpdateOperation::Multiply => Self::multiply_values(current_val, &value, None),
+                    UpdateOperation::Divide => Self::divide_values(current_val, &value, None),
+                    UpdateOperation::Modulus => Self::modulo_values(current_val, &value, None),
                 };
 
                 // Apply update directly, like right now. Like... RIGHT NOW
@@ -2307,8 +1874,8 @@ impl VirtualMachine {
 
             Value::String(ref mut str) => {
                 // Only allow assignment operator "=", nothin else
-                if operation != "=" { 
-                    return Err(format!("Cannot update a string with invalid operation: {}", operation)); 
+                if operation != UpdateOperation::Assign { 
+                    return Err(format!("Cannot update a string with invalid operation: {:?}", operation)); 
                 }
 
                 // Only allow integer indexing, nothin else
@@ -2366,13 +1933,12 @@ impl VirtualMachine {
 
                 // Blah Blah Blah...
                 let new_val = match operation {
-                    "=" => value,
-                    "+=" => Self::add_values(current_val, &value, None),
-                    "-=" => Self::subtract_values(current_val, &value, None),
-                    "*=" => Self::multiply_values(current_val, &value, None),
-                    "/=" => Self::divide_values(current_val, &value, None),
-                    "%=" => Self::modulo_values(current_val, &value, None),
-                    _ => return Err(format!("Unknown operation: {}", operation)),
+                    UpdateOperation::Assign => value,
+                    UpdateOperation::Add => Self::add_values(current_val, &value, None),
+                    UpdateOperation::Subtract => Self::subtract_values(current_val, &value, None),
+                    UpdateOperation::Multiply => Self::multiply_values(current_val, &value, None),
+                    UpdateOperation::Divide => Self::divide_values(current_val, &value, None),
+                    UpdateOperation::Modulus => Self::modulo_values(current_val, &value, None),
                 };
 
                 dictionary.values[value_index] = new_val;
@@ -2395,11 +1961,11 @@ impl VirtualMachine {
             if let Some(entry) = mutable_scope.get_mut(&name) {
                 // Perform type checking compatibility
                 if let Some(ensurable) = &entry.max_type {
-                    MaxType::ensure_compatibility(ensurable, &value);
+                    Self::ensure_compatibility(ensurable, &value);
                 }
 
                 // Fixed variable check here!
-                if entry.modifiers.contains(&String::from("fixed")) {
+                if entry.modifiers.fixed {
                     panic!("Cannot modify a fixed variable")
                 }
 
@@ -2431,18 +1997,6 @@ impl VirtualMachine {
         let parameter_names = if definition.parameters.len() == args.len() {
             definition.parameters.clone()
         }
-        else if definition.parameters.is_empty()
-            && definition.arity == 1
-        {
-            definition.chunk.instructions.iter().find_map(|instruction| {
-                (instruction.op_code == "Load")
-                    .then(|| instruction.operand.as_ref().and_then(serde_json::Value::as_str))
-                    .flatten()
-                    .filter(|name| !lambda.captures.contains_key(*name))
-                    .map(str::to_owned)
-            })
-            .into_iter().collect()
-        }
         else {
             panic!("Lambda {} must provide parameter names for its arity", definition.id);
         };
@@ -2458,7 +2012,7 @@ impl VirtualMachine {
                 name,
                 VariableEntry::new(
                     value,
-                    vec![],
+                    Modifiers::e_new(),
                     None,
                     None
                 )
@@ -2849,7 +2403,7 @@ impl VirtualMachine {
 
     /// Returns from the task it is within, exitting all scopes the task has gone through in the process.
     /// This may also return a value to whatever it is assigning to
-    pub fn return_from_task(&mut self, return_value: Option<Value>, ip: &mut usize, instructions: &mut Arc<Vec<Instruction>>) {
+    pub fn return_from_task(&mut self, return_value: Option<Value>, ip: &mut usize, instructions: &mut Arc<Vec<Op>>) {
         if self.call_stack.len() <= 0 {
             panic!("Return can only be used in a valid task");
         }
@@ -2861,14 +2415,14 @@ impl VirtualMachine {
             // Ensure typing
             if let Some(coroutine) = &frame.coroutine_instance {
                 if let Some(ensurable) = &coroutine.borrow().return_type {
-                    MaxType::ensure_compatibility(ensurable, &returnable);
+                    Self::ensure_compatibility(ensurable, &returnable);
                 }
             }
             // Same for a task
             else if let Some(task_info) = &frame.task_info {
                 // If the typing is None, that means we don't expect any explicit typing!
                 if let Some(ensurable) = &task_info.return_type {
-                    MaxType::ensure_compatibility(ensurable, &returnable);
+                    Self::ensure_compatibility(ensurable, &returnable);
                 } else if task_info.return_type != None {
                     panic!("Unknown error occured when matching the CallFrame {:#?}'s instance return type to the return value of {:#?}", frame, returnable);
                 }
@@ -2912,7 +2466,7 @@ impl VirtualMachine {
     }
 
     /// Yields a coroutine, pausing the coroutine where it is and optionally bringing a value back as well
-    pub fn yield_task(&mut self, yielded_value: Option<Value>, ip: &mut usize, instructions: &mut Arc<Vec<Instruction>>, coroutine: &CoroutineHandle) {
+    pub fn yield_task(&mut self, yielded_value: Option<Value>, ip: &mut usize, instructions: &mut Arc<Vec<Op>>, coroutine: &CoroutineHandle) {
         if self.call_stack.len() <= 0 {
             panic!("Can only yield a value within a coroutine");
         }
@@ -2946,7 +2500,7 @@ impl VirtualMachine {
             drop(coroutine_state);
 
             if let Some(co_inst) = frame.coroutine_instance && let Some(ensurable) = &co_inst.borrow().return_type {
-                MaxType::ensure_compatibility(ensurable, &yielded_unwrapped);
+                Self::ensure_compatibility(ensurable, &yielded_unwrapped);
             }
 
             // Alike tasks logic
@@ -2963,8 +2517,8 @@ impl VirtualMachine {
     }
 
     /// Attempts to invoke a native task from the native registries
-    pub fn invoke_native(&mut self, call: TaskCallOperand, ip: &mut usize,
-                          active_instr: &mut Arc<Vec<Instruction>>,
+    pub fn invoke_native(&mut self, call: &TaskCallOperand, ip: &mut usize,
+                          active_instr: &mut Arc<Vec<Op>>,
                           control_transferred: &mut bool)
                           -> Value {
         // Get all the args from popping off the stack
@@ -2977,7 +2531,7 @@ impl VirtualMachine {
         }
         args.reverse();
 
-        let mut target_type = call.target;
+        let mut target_type = call.target.clone();
 
         // If the targetted type was not resolved, instead look at the type of the first argument (i.e. it is always the 'self' value)
         // Oh, and btw, ONLY infer target type if this was explicitly invoked via dot syntax (member access)!
@@ -3030,7 +2584,7 @@ impl VirtualMachine {
             let self_val = if is_static { Value::Nil } else { args[0].clone() };
             let result = prop.get(self, self_val);
 
-            MaxType::ensure_compatibility(return_type.as_ref().unwrap_or(&MaxType::NoType), &result);
+            Self::ensure_compatibility(return_type.as_ref().unwrap_or(&MaxType::NoType), &result);
 
             return result;
         }
@@ -3057,7 +2611,7 @@ impl VirtualMachine {
     }
 
     pub fn execute_coroutine_task(&mut self, coroutine: &CoroutineHandle, method: &str, ip: &mut usize,
-                                    active_instr: &mut Arc<Vec<Instruction>>,
+                                    active_instr: &mut Arc<Vec<Op>>,
                                     control_transferred: &mut bool)
             {
         match method {
@@ -3074,7 +2628,7 @@ impl VirtualMachine {
         module_name: &str,
         argument_count: u64,
         ip: &mut usize,
-        active_instructions: &mut Arc<Vec<Instruction>>,
+        active_instructions: &mut Arc<Vec<Op>>,
     ) {
         if argument_count != task.parameters.len() as u64 {
             panic!(
@@ -3102,12 +2656,12 @@ impl VirtualMachine {
             let argument = &arguments[index];
 
             if let Some(ensurable) = &parameter.max_type {
-                MaxType::ensure_compatibility(ensurable, argument);
+                Self::ensure_compatibility(ensurable, argument);
             }
 
             call_scope.insert(
                 parameter.name.clone(),
-                VariableEntry::new(argument.clone(), vec![], None, None),
+                VariableEntry::new(argument.clone(), Modifiers::e_new(), None, None),
             );
         }
 
@@ -3148,7 +2702,7 @@ impl VirtualMachine {
         coroutine: &CoroutineHandle,
         method: &str,
         ip: &mut usize,
-        active_instr: &mut Arc<Vec<Instruction>>,
+        active_instr: &mut Arc<Vec<Op>>,
         control_transferred: &mut bool,
     ) {
         let state = coroutine.borrow().execution_state.clone();
@@ -3342,7 +2896,7 @@ impl VirtualMachine {
     }
 
     /// Returns a callframe back to it's original call place, utilising it's return ip, and also resetting the active instructions to what is given.
-    fn restore_caller(&mut self, frame: CallFrame, ip: &mut usize, instructions: &mut Arc<Vec<Instruction>>) {
+    fn restore_caller(&mut self, frame: CallFrame, ip: &mut usize, instructions: &mut Arc<Vec<Op>>) {
         // Truncate very neatly just drops all the scopes the frame call went through, returning to the original scope
         self.scopes.truncate(frame.scope_depth);
 
@@ -3351,5 +2905,107 @@ impl VirtualMachine {
         *instructions = frame.return_instructions;
 
         self.active_instructions = Arc::clone(instructions);
+    }
+
+    /**
+        Checks if a value and the expected type are compatible. Returns a Boolean of the result in the end.
+        This function is used for runtime during Virtual Machine execution.
+
+        ### Example
+        A String Value and String Type are compatible, but not a Boolean Value and StringType.
+        An Integer Value and a Number Type also works.
+
+        ```
+        let int = Value::Integer(5);
+
+        let boolean = Value::Boolean(true);
+
+        println!("{}", MaxType::check_value_compatibility(MaxType::IntegerType, int)); // True
+        println!("{}", MaxType::check_value_compatibility(MaxType::StringType, boolean)); // False
+        println!("{}", MaxType::check_value_compatibility(MaxType::NumberType, int)); // True
+        ```
+    */
+    pub fn check_value_compatibility(expected_type: &MaxType, value: &Value) -> bool {
+        match (expected_type, value) {
+            (MaxType::IntegerType, Value::Integer(_)) => true,
+            (MaxType::FloatType, Value::Float(_)) => true,
+            (MaxType::FloatType, Value::Integer(_)) => true,
+            
+            // NumberType allows both Integer and Float runtime values
+            (MaxType::NumberType, Value::Integer(_)) => true,
+            (MaxType::NumberType, Value::Float(_)) => true,
+
+            (MaxType::StringType, Value::String(_)) => true,
+
+            // Possible or Boolean, it works!
+            (MaxType::BooleanType, Value::Boolean(_)) => true,
+            (MaxType::BooleanType, Value::Possible(_)) => true,
+            (MaxType::PossibleType, Value::Possible(possible)) => possible.borrow().current.is_none(),
+
+            (MaxType::ListType(expected_elements), Value::List(list_vals)) => {
+                // This gets the elements, iterates and puts a closure upon all of them, checking if they are compatible with the element type!
+                let elements_ok = match expected_elements {
+                    Some(e_type) => list_vals.borrow().items.iter().all(|e| Self::check_value_compatibility(e_type, e)),
+                    None => true,
+                };
+                elements_ok
+            },
+            
+            (MaxType::DictionaryType(expected_key, expected_val), Value::Dictionary(dictionary)) => {
+                let dictionary = dictionary.borrow();
+                // If dictionary types are specified, check elements; if no specifications, allow any
+                let key_ok = match expected_key {
+                    Some(k_type) => dictionary.keys.iter().all(|k| Self::check_value_compatibility(k_type, k)),
+                    None => true,
+                };
+                let val_ok = match expected_val {
+                    Some(v_type) => dictionary.values.iter().all(|v| Self::check_value_compatibility(v_type, v)),
+                    None => true,
+                };
+                key_ok && val_ok
+            },
+
+            (MaxType::CoroutineType, Value::Coroutine(_)) => true,
+            (MaxType::TaskType(t), Value::Lambda(l)) => {
+                // Check if argument count also works!
+                if *t as u64 == l.definition.arity {
+                    return true
+                }
+                false
+            },
+
+            (MaxType::EnumType(t), Value::EnumDefinition(e)) => t == &e.identifier,
+            (MaxType::EnumType(t), Value::EnumMember(mem)) => t == &mem.enum_name,
+
+            // These two are special!
+            (MaxType::NoType, _) => true,
+            (_, Value::Nil) => true,
+            
+            _ => false,
+        }
+    }
+
+    /// A function that errs when the value is not compatible with the given type.
+    /// Calls `MaxType::check_value_compatibility()` to do so.
+    pub fn ensure_compatibility(expected_type: &MaxType, value: &Value) {
+        if !Self::check_value_compatibility(expected_type, value) {
+            panic!("Invalid Type Compatibility! Expected type '{}', got Value '{}'", expected_type, value);
+        }
+    }
+
+    /// Checks if a given value is valid to be a dictionary key
+    pub fn valid_dictkey_value(m_type: &MaxType, value: &Value) -> bool {
+        match m_type {
+            // Pretty cool, '..' means just ignore what's inside
+            MaxType::DictionaryType( .. ) => {
+                if matches!(value, Value::String(_) | Value::Integer(_)) {
+                    return true
+                }
+
+                false
+            }
+
+            _ => { println!("Can only call this function on dictionaries!"); false }
+        }
     }
 }

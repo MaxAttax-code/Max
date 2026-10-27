@@ -1,4 +1,5 @@
-use crate::{natives::{NativeRegistry, ParamSpec}, vm::{MaxType::*, Value, VirtualMachine}};
+use crate::{natives::{NativeRegistry, ParamSpec}, vm::{VirtualMachine, Value}};
+use max_bytecode::MaxType::*;
 use super::{NativeTask, NativeProperty, NativeTarget};
 
 

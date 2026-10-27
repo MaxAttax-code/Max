@@ -1,0 +1,8 @@
+[package]
+name = "max_runtime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+max_bytecode = { path = ".." }
+max_compiler = { path = "../max_compiler" }

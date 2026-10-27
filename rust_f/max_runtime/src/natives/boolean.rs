@@ -1,6 +1,7 @@
 // ... Boolean methods? WHAT? These can be surprisingly useful, I tell you!
 
-use crate::{natives::{NativeRegistry, ParamSpec}, vm::{MaxType::{*}, Value, VirtualMachine}};
+use crate::{natives::{NativeRegistry, ParamSpec}, vm::{VirtualMachine, Value}};
+use max_bytecode::MaxType::*;
 use super::{NativeTask, NativeTarget};
 
 

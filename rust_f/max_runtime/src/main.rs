@@ -1,50 +1,57 @@
-// cargo run
+// cargo run -p max_runtime
 
 // ----- IMPORT CREATED CRATES -----\\
 
-pub mod bytecode;
 mod natives;
 
 pub mod vm;
+use std::path::PathBuf;
+
 use crate::vm::{VirtualMachine};
+use max_compiler::{compiler::NativeNames, project::compile_project};
 
 // ------ \\
 
-use std::fs;
-use std::path::Path;
+/// Finds where the project directory is (where main.max must live)
+fn find_project_dir() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join("src").join("main.max").is_file() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
 
 // ------ \\
 
 fn main() {
-    let native_registry = natives::NativeRegistry::new();
-
-    // First, let's Serialize all those native funcs and properties
-    let registry_spec: natives::export::NativeRegistrySpec = natives::NativeRegistry::export_spec(&native_registry);
-
-    // Serialize the spec into a formatted JSON string
-    let json_data = match serde_json::to_string_pretty(&registry_spec) {
-        Ok(json) => json,
-        Err(err) => panic!("Failed to serialize native registry spec: {}", err),
+    let project_dir = match std::env::args().nth(1) {
+        Some(arg) => PathBuf::from(arg),
+        None => find_project_dir().unwrap_or_else(|| {
+            eprintln!("could not find src/main.max in this folder or any parent folder");
+            std::process::exit(1);
+        }),
     };
 
-    // Ensure the output directory exists, just like your fath-
-    let output_dir = Path::new("src/exported");
-    if let Err(err) = fs::create_dir_all(output_dir) {
-        panic!("Failed to create directory {:?}: {}", output_dir, err);
-    }
+    let registry = natives::NativeRegistry::new();
+    let native_names = NativeNames {
+        static_modules: registry.static_module_names(),
+        global_tasks: registry.global_task_names(),
+    };
 
-    // Write the JSON string to the target file
-    let file_path = output_dir.join("export.json");
-    if let Err(err) = fs::write(&file_path, json_data) {
-        panic!("Failed to write export.json at {:?}: {}", file_path, err);
-    }
+    let program = match compile_project(&project_dir.join("src"), native_names) {
+        Ok(program) => program,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
 
-    // VM executes bytecode
     let mut vm = VirtualMachine::new();
-
-    // We give all the module JSON files into the VM!
-    vm.load_modules_from_dir("../bytecode_json").expect("Error occured whilst attempting to load all modules from bytecode_json");
-
-    // We run this if a 'main.json' file is found
+    vm.load_program(program.modules);
+    // We run this if a 'main' module file is found
     vm.run_main();
 }
