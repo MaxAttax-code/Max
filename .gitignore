@@ -1,2 +1,8 @@
-/rust_f/target
-/rust_f/max_runtime/target
+/rust_f/target/
+/rust_f/max_runtime/target/
+/rust_f/cargo.lock
+/max-language/node_modules/
+/max-language/.vscode/
+/.vs/
+/.vscode/
+/rust_f/.vscode/
