@@ -2,7 +2,7 @@
 
 A language that was constructed as a multi-paradigm tool, easily integrable within projects. It's focused on being human-friendly, with cohesive language, and understandable keywords.
 Although some aspects maybe prove to be verbose, we integrate *short-cut methods* that make code faster to write, alas less readable. It's fast and memory safe thanks to
-smart use of a Rust compiler.
+smart use of a **Rust** compiler.
 
 ***
 
