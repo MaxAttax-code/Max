@@ -44,7 +44,7 @@ namespace Max
         {
             int charCount = sub.Length;
 
-            for (int i = 0; i < sub.Length; i++)
+            for (int i = 0; i < charCount; i++)
             {
                 int positionNow = position + i;
                 char currChar = sub[i];
