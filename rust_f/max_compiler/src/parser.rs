@@ -628,6 +628,9 @@ impl Parser {
             K::Foreach => StatementKind::Foreach(self.parse_foreach()?),
             K::Match => StatementKind::Match(self.parse_match()?),
 
+            K::Break => StatementKind::Break,
+            K::Skip => StatementKind::Skip,
+
             K::Identifier => self.parse_identifier_statement()?,
             K::Enum => StatementKind::Enum(self.parse_enum()?),
 
