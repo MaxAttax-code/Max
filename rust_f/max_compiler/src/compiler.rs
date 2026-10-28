@@ -790,7 +790,6 @@ impl<'a> Compiler<'a> {
 
         let condition_start = self.ops.len();
         self.patch_jump(past_zero_check, condition_start);
-        let skip_jumps = self.emit_jump(bc::Op::Jump);
 
         // A positive step counts up, so keep going while variable <= limit
         self.compile_temporary_comparison(step_slot, bc::CompareOp::Greater);
@@ -823,7 +822,6 @@ impl<'a> Compiler<'a> {
         self.emit(bc::Op::Update(bc::UpdateOperand { name: name.clone(), operation: bc::UpdateOperation::Assign }));
 
         self.emit(bc::Op::Jump(condition_start));
-        self.patch_jump(skip_jumps, increment_start);
 
         let exit = self.ops.len();
         self.emit(bc::Op::ExitScope);
@@ -832,7 +830,7 @@ impl<'a> Compiler<'a> {
         self.patch_jump(positive_exit, exit);
         self.patch_jump(negative_exit, exit);
         for jump in context.break_jumps { self.patch_jump(jump, exit); }
-        for jump in context.skip_jumps { self.patch_jump(jump, condition_start); }
+        for jump in context.skip_jumps { self.patch_jump(jump, increment_start); }
         Ok(())
     }
 
