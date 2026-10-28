@@ -233,6 +233,24 @@ pub struct ForeachStatement {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Case {
+    /// The expression to match against the match statements result
+    pub condition: Expression,
+    /// The body. Keep in mind with declaring a value to match statement, all case bodies require a return statement.
+    pub body: Vec<Statement>
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchStatement {
+    /// What the cases match against
+    pub condition: Expression,
+    pub cases: Vec<Case>,
+    /// Our 'else' case. Only holds a block of statements as it has no condition
+    pub default: Option<Vec<Statement>>
+}
+
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TaskDefinition {
     pub kind: TaskKind,
     pub name: String,
@@ -270,12 +288,17 @@ pub enum StatementKind {
     While(WhileStatement),
     For(ForStatement),
     Foreach(ForeachStatement),
+    Match(MatchStatement),
 
     /// A bare task call such as `list.add(1)`
     Expression(Expression),
 
     Return(Option<Expression>),
     Yield(Option<Expression>),
+
+    // Pretty special, they have no operands
+    Break,
+    Skip,
 
     TaskDefinition(TaskDefinition),
     Enum(EnumDefinition),

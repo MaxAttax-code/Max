@@ -108,12 +108,34 @@ struct VarInfo {
     open: bool,
 }
 
+/// What kind of Enum Node
 enum NodeKind {
     Definition,
     Member,
 }
 
-/// What an expression such as `ItemType` or `ItemType.Tool` statically refers to
+/// The Jump Kind of a jump.
+/// Loops allow break or skip.
+/// Match only allows break
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JumpKind { Loop, Match }
+
+/// Gives context as to what a statements jumps lead to
+struct JumpContext {
+    kind: JumpKind,
+    /// Runtime scope depth at the point a `break` lands
+    break_depth: usize,
+    /// Runtime scope depth at the point a `skip` lands. Specific to loops
+    skip_depth: usize,
+    /// Each position a break is in
+    break_jumps: Vec<usize>,
+    /// Each position a skip is in
+    skip_jumps: Vec<usize>,
+}
+
+/// What an enum expression statically refers to.
+/// Holds a path to it's location, and it's kind/children,
+/// such as `ItemType` or `ItemType.Tool`
 struct EnumNode<'s> {
     kind: NodeKind,
     path: String,
@@ -125,10 +147,18 @@ pub struct Compiler<'a> {
     ctx: &'a CompileContext,
     dependencies: &'a [String],
 
+    /// All the OpCodes for the `VirtualMachine` to read
     ops: Vec<bc::Op>,
     tasks: HashMap<String, bc::TaskInfo>,
     coroutines: HashMap<String, bc::CoroutineInfo>,
     enums: HashMap<String, bc::EnumStructure>,
+
+    /**
+        All the jump contexts within the file.
+        Each statement that requires jumps to loop or move (e.g. `For`, `While`) holds
+        jump context to provide info for `break` and `skip+`
+    */
+    jump_contexts: Vec<JumpContext>,
 
     /// Every enum in this file (collected before compiling), as the parser produced them
     local_enums: HashMap<String, Vec<EnumMember>>,
@@ -148,13 +178,18 @@ impl<'a> Compiler<'a> {
             coroutines: HashMap::new(),
             enums: HashMap::new(),
             local_enums: HashMap::new(),
+            jump_contexts: Vec::new(),
             task_depth: 0,
             variable_scopes: vec![HashMap::new()],
         }
     }
 
-    /// A compiler for a lambda body. It sees what the parent has defined so far,
-    /// but its instructions go into its own list.
+    /**
+        A compiler for a lambda body. It sees what the parent has defined *so far*,
+        but its instructions go into its own list.
+        Keep in mind that `jump_contexts` is not saved into the lambda,
+        hence you cannot break or skip a lambda
+    */
     fn new_child(&self) -> Compiler<'a> {
         Compiler {
             ctx: self.ctx,
@@ -164,6 +199,7 @@ impl<'a> Compiler<'a> {
             coroutines: self.coroutines.clone(),
             enums: self.enums.clone(),
             local_enums: self.local_enums.clone(),
+            jump_contexts: Vec::new(),
             task_depth: 1,
             variable_scopes: vec![HashMap::new()],
         }
@@ -252,6 +288,55 @@ impl<'a> Compiler<'a> {
         self.compile_statements(body)?;
         self.emit(bc::Op::ExitScope);
         self.exit_compiler_scope();
+        Ok(())
+    }
+
+    /// Pushes a new `JumpContext` in, with the given `break_depth` and `skip_depth`.
+    /// The `break_jumps` and `skip_jumps` are started as empty `Vec`
+    fn push_jump_context(&mut self, kind: JumpKind, break_depth: usize, skip_depth: usize) {
+        self.jump_contexts.push(JumpContext {
+            kind, break_depth, skip_depth, break_jumps: Vec::new(), skip_jumps: Vec::new(),
+        });
+    }
+
+    /// Pops from the `jump_contexts` list, returning the `JumpContext``
+    fn pop_jump_context(&mut self) -> JumpContext {
+        self.jump_contexts.pop().expect("push and pop are paired")
+    }
+
+    /// Compiles a `break` by closing all scopes up to `break_depth` of the last `JumpContext` in `jump_contexts`
+    fn compile_break(&mut self, span: Span) -> Result<(), MaxError> {
+        // Smart checking by seeing if the break depth in the last jump context exists
+        let Some(target) = self.jump_contexts.last().map(|c| c.break_depth) else {
+            return Err(error(span, "'break' can only be used inside a loop or a match statement"));
+        };
+
+        // Close every scope opened since the target, then leave
+        for _ in 0..self.variable_scopes.len() - target {
+            self.emit(bc::Op::ExitScope);
+        }
+        // Leap into action! Or actually out of action. Quick! Make a 'break' for it!
+        let jump = self.emit_jump(bc::Op::Jump);
+        self.jump_contexts.last_mut().unwrap().break_jumps.push(jump);
+        Ok(())
+    }
+
+    /// Compiles a `skip` by closing the scopes currently opened and going to the beginning of a loop again.
+    /// Match statements are ignored, so instead the nearest loop is skipped
+    fn compile_skip(&mut self, span: Span) -> Result<(), MaxError> {
+        // A match is stepped over: `skip` belongs to the nearest enclosing loop, so matches are just totally done for!
+        // Yes, keep in mind using `rposition` means we don't just check one position in the contexts!
+        let Some(index) = self.jump_contexts.iter().rposition(|c| c.kind == JumpKind::Loop) else {
+            return Err(error(span, "'skip' can only be used inside a loop"));
+        };
+
+        // Close the blowin scopes...
+        for _ in 0..self.variable_scopes.len() - self.jump_contexts[index].skip_depth {
+            self.emit(bc::Op::ExitScope);
+        }
+        // This time we ARE jumping into action!
+        let jump = self.emit_jump(bc::Op::Jump);
+        self.jump_contexts[index].skip_jumps.push(jump);
         Ok(())
     }
 
@@ -534,6 +619,11 @@ impl<'a> Compiler<'a> {
             StatementKind::While(while_statement) => self.compile_while(while_statement)?,
             StatementKind::For(for_statement) => self.compile_for(for_statement)?,
             StatementKind::Foreach(foreach_statement) => self.compile_foreach(foreach_statement)?,
+            StatementKind::Match(match_statement) => self.compile_match(match_statement)?,
+
+            // These don't need operands as they just signal the compiler to do something
+            StatementKind::Break => self.compile_break(statement.span)?,
+            StatementKind::Skip => self.compile_skip(statement.span)?,
 
             StatementKind::Expression(expression) => {
                 self.compile_expression(expression)?;
@@ -651,15 +741,23 @@ impl<'a> Compiler<'a> {
     fn compile_while(&mut self, statement: &WhileStatement) -> Result<(), MaxError> {
         // The condition is re-checked at the start of every iteration
         let condition_start = self.ops.len();
+        // We'll use this to determine the depth for breaking and skipping
+        let depth = self.variable_scopes.len();
 
         self.compile_expression(&statement.condition)?;
         let exit_jump = self.emit_jump(bc::Op::JumpIfFalse);
 
+        self.push_jump_context(JumpKind::Loop, depth, depth);
         self.compile_scoped_block(&statement.body)?;
+        let context = self.pop_jump_context();
+
         self.emit(bc::Op::Jump(condition_start));
 
         let exit = self.ops.len();
         self.patch_jump(exit_jump, exit);
+        // Patch these jumps. Telling each `break` and `skip` where to jump
+        for jump in context.break_jumps { self.patch_jump(jump, exit); } // To the end
+        for jump in context.skip_jumps { self.patch_jump(jump, condition_start); } // To the beginning (of the condition)
         Ok(())
     }
 
@@ -670,6 +768,9 @@ impl<'a> Compiler<'a> {
         // The loop variable lives in a scope of its own
         self.emit(bc::Op::EnterScope);
         self.enter_compiler_scope();
+
+        // Why after `enter_compiler_scope`? See later
+        let loop_depth = self.variable_scopes.len();
 
         self.compile_declaration(&statement.declaration)?;
 
@@ -689,6 +790,7 @@ impl<'a> Compiler<'a> {
 
         let condition_start = self.ops.len();
         self.patch_jump(past_zero_check, condition_start);
+        let skip_jumps = self.emit_jump(bc::Op::Jump);
 
         // A positive step counts up, so keep going while variable <= limit
         self.compile_temporary_comparison(step_slot, bc::CompareOp::Greater);
@@ -708,7 +810,11 @@ impl<'a> Compiler<'a> {
         let body_start = self.ops.len();
         self.patch_jump(body_jump, body_start);
 
+        // Our loop depth allows the compiler to exit the compiler scope *before* having to exit via a break
+        self.push_jump_context(JumpKind::Loop, loop_depth, loop_depth);
         self.compile_scoped_block(&statement.body)?;
+        let context = self.pop_jump_context();
+        let increment_start = self.ops.len();
 
         // variable = variable + step
         self.emit(bc::Op::Load(name.clone()));
@@ -717,6 +823,7 @@ impl<'a> Compiler<'a> {
         self.emit(bc::Op::Update(bc::UpdateOperand { name: name.clone(), operation: bc::UpdateOperation::Assign }));
 
         self.emit(bc::Op::Jump(condition_start));
+        self.patch_jump(skip_jumps, increment_start);
 
         let exit = self.ops.len();
         self.emit(bc::Op::ExitScope);
@@ -724,6 +831,8 @@ impl<'a> Compiler<'a> {
 
         self.patch_jump(positive_exit, exit);
         self.patch_jump(negative_exit, exit);
+        for jump in context.break_jumps { self.patch_jump(jump, exit); }
+        for jump in context.skip_jumps { self.patch_jump(jump, condition_start); }
         Ok(())
     }
 
@@ -751,6 +860,8 @@ impl<'a> Compiler<'a> {
         self.emit(bc::Op::EnterScope);
         self.enter_compiler_scope();
 
+        let loop_depth = self.variable_scopes.len();
+
         // The loop variables start as nil
         for name in &statement.variables {
             self.emit_constant(bc::ConstValue::Nil);
@@ -777,14 +888,74 @@ impl<'a> Compiler<'a> {
         }));
         let exit_jump = self.emit_jump(bc::Op::JumpIfFalse);
 
+        self.push_jump_context(JumpKind::Loop, loop_depth, loop_depth);
         // Each iteration gets its own scope, so `declare` inside the body works every time
         self.compile_scoped_block(&statement.body)?;
+        let context = self.pop_jump_context();
         self.emit(bc::Op::Jump(loop_start));
 
         let exit = self.ops.len();
         self.emit(bc::Op::ExitScope);
         self.exit_compiler_scope();
         self.patch_jump(exit_jump, exit);
+
+        for jump in context.break_jumps { self.patch_jump(jump, exit); }
+        for jump in context.skip_jumps { self.patch_jump(jump, loop_start); }
+        Ok(())
+    }
+
+    fn compile_match(&mut self, statement: &MatchStatement) -> Result<(), MaxError> {
+        /*
+            Our match design is very similar to C#:
+             - Evaluate the subject once, so `match next() then` doesn't call it once per case (aka, one evaluated value to match against)
+             - Check through cases. Once a case is matched, go through it's body
+             - If the case has NO break, fall through to next cases body, and the next if there is further no break
+             - If a break is reached, end the matching or fallthroughs
+             - If no match is made and an 'else' exists, go through that instead
+             * The else is run too if no break from the other cases are hit!
+        */
+        let slot = self.ctx.alloc_slot();
+        self.compile_expression(&statement.condition)?;
+        self.emit(bc::Op::TemporaryStore(slot));
+
+        let depth = self.variable_scopes.len();
+        // `Match` JumpKind specifically!
+        self.push_jump_context(JumpKind::Match, depth, depth);
+
+        // 1. Tests: a match jumps to its body
+        let mut body_jumps = Vec::new();
+        for case in &statement.cases {
+            self.emit(bc::Op::TemporaryLoad(slot));
+            self.compile_expression(&case.condition)?;
+            self.emit(bc::Op::Compare(bc::CompareOp::Equal));
+
+            let next_test = self.emit_jump(bc::Op::JumpIfFalse);
+            body_jumps.push(self.emit_jump(bc::Op::Jump));
+
+            let here = self.ops.len();
+            self.patch_jump(next_test, here);
+        }
+        // Nothing matched: step over every case body
+        let to_default = self.emit_jump(bc::Op::Jump);
+
+        // 2. Bodies, in order. With no jump between them, a body without `break` runs into the next
+        for (case, jump) in statement.cases.iter().zip(body_jumps) {
+            let start = self.ops.len();
+            self.patch_jump(jump, start);
+            self.compile_scoped_block(&case.body)?;
+        }
+
+        // 3. The default 'else'
+        let default_start = self.ops.len();
+        self.patch_jump(to_default, default_start);
+        if let Some(default) = &statement.default {
+            self.compile_scoped_block(default)?;
+        }
+
+        let context = self.pop_jump_context();
+        let end = self.ops.len();
+        // Patch all breaks. We don't do skips in matches, boy
+        for jump in context.break_jumps { self.patch_jump(jump, end); }
         Ok(())
     }
 
@@ -833,6 +1004,8 @@ impl<'a> Compiler<'a> {
         self.enter_compiler_scope();
 
         let entry_point = self.ops.len() as u64;
+
+        let saved_contexts = std::mem::take(&mut self.jump_contexts);
 
         match task.kind {
             TaskKind::Function => {
@@ -893,6 +1066,9 @@ impl<'a> Compiler<'a> {
                 }));
             }
         }
+
+        // Reenter the old jump contexts, so a task definition doesn't just jump through its self to break out a loop it is in
+        self.jump_contexts = saved_contexts;
         Ok(())
     }
 
