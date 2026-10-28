@@ -43,7 +43,7 @@ impl Parser {
         self.peek_kind(0) == Some(kind)
     }
 
-    /// Consumes the current token if it has the given kind
+    /// Consumes the current token if it has the given kind, returning if it was successful or not as a bool
     fn eat(&mut self, kind: K) -> bool {
         if self.check(kind) {
             self.pos += 1;
@@ -96,7 +96,8 @@ impl Parser {
                 | K::Then | K::Elif | K::Else | K::Maybe | K::ConcludeStatement | K::Return
                 | K::Yield | K::While | K::For | K::Foreach | K::Do | K::Nil | K::As | K::Not
                 | K::And | K::Or | K::To | K::Step | K::Of | K::In | K::With
-                | K::Using | K::Enum | K::Modifier | K::Members
+                | K::Using | K::Enum | K::Modifier | K::Members | K::Break | K::Skip
+                | K::Match | K::Case
         )
     }
 
@@ -119,7 +120,7 @@ impl Parser {
             Some(kind) => matches!(
                 kind,
                 // These are what can follow a return statement
-                K::Semicolon | K::ConcludeStatement | K::Elif | K::Else | K::Maybe
+                K::Semicolon | K::ConcludeStatement | K::Elif | K::Else | K::Maybe | K::Case
             ),
         }
     }
@@ -625,6 +626,7 @@ impl Parser {
             K::While => StatementKind::While(self.parse_while()?),
             K::For => StatementKind::For(self.parse_for()?),
             K::Foreach => StatementKind::Foreach(self.parse_foreach()?),
+            K::Match => StatementKind::Match(self.parse_match()?),
 
             K::Identifier => self.parse_identifier_statement()?,
             K::Enum => StatementKind::Enum(self.parse_enum()?),
@@ -894,6 +896,63 @@ impl Parser {
         self.expect(K::ConcludeStatement)?;
 
         Ok(ForeachStatement { variables, iterable, body })
+    }
+
+    fn parse_match(&mut self) -> Result<MatchStatement, MaxError> {
+        self.expect(K::Match)?;
+        let condition = self.parse_expression()?;
+        self.expect(K::Then)?;
+
+        let (cases, default) = self.parse_cases()?;
+
+        Ok(MatchStatement { condition, cases, default })
+    }
+
+    /// Parses the cases from a match statement, starting after the 'then'.
+    /// This returns the Vec of Cases, as well as an Optional 'Else' case as a tuple
+    fn parse_cases(&mut self) -> Result<(Vec<Case>, Option<Vec<Statement>>), MaxError> {
+        // Aka an empty match statement
+        if self.eat(K::ConcludeStatement) {
+            return Ok((vec![], None));
+        }
+
+        // `case` ends the previous body, so cases need no `conclude` of their own
+        let stops = [K::Case, K::Else, K::ConcludeStatement];
+
+        let mut cases: Vec<Case> = vec![];
+        let mut else_case: Option<Vec<Statement>> = None;
+
+        loop {
+
+            // Very special exception for the one 'else' case
+            if self.eat(K::Else) {
+                // ONLY Conclude is expected at the end. Meaning the 'else' case MUST be the last case
+                else_case = Some(self.parse_block(&[K::ConcludeStatement])?);
+                self.expect(K::ConcludeStatement)?;
+                break;
+            }
+
+            self.expect(K::Case)?;
+            let expression = self.parse_expression()?;
+            self.expect(K::Do)?;
+            let body = self.parse_block(&stops)?;
+
+            let case: Case = Case {
+                condition: expression,
+                body
+            };
+            cases.push(case);
+
+            // Check for if the block stopped at a conclude statement
+            if self.eat(K::ConcludeStatement) {
+                break;
+            }
+        }
+        
+        // NOTE: Due to the 'eat' for both conclude statement checks,
+        // This fn always moves immediately unto the next token after the match statement
+
+        Ok((cases, else_case))
     }
 
     /// Parses parameters, this always begins by expecting a left parenthesis

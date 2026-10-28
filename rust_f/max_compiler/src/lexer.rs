@@ -210,7 +210,12 @@ impl Lexer {
             "while" => K::While,
             "for" => K::For,
             "foreach" => K::Foreach,
+            "match" => K::Match,
+            "case" => K::Case,
             "do" => K::Do,
+
+            "break" => K::Break,
+            "skip" => K::Skip,
 
             "nil" => K::Nil,
             "as" => K::As,

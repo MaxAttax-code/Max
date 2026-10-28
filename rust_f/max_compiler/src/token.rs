@@ -37,6 +37,11 @@ pub enum TokenKind {
     Do,
     For,
     Foreach,
+    Match,
+    Case,
+
+    Break,
+    Skip,
 
     Equals,
     Comparator,
