@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { toPascalCase } from "./lint";
+import { toPascalCase, toLetter } from "./lint";
 
 export function registerCodeActions(context: vscode.ExtensionContext) {
     /**
@@ -28,7 +28,26 @@ export function registerCodeActions(context: vscode.ExtensionContext) {
                 }
 
                 if (msg.includes("in PascalCase")) {
-                    fixes.push(this.createPascalCaseFix(document, diag))
+                    fixes.push(this.createPascalCaseFix(document, diag));
+                }
+
+                if (msg.includes("Infinite for loop detected")) {
+                    // Branch to what the case of infinite loop is
+                    if (msg.includes("step value of 0")) {
+                        fixes.push(this.createStepOneFix(document, diag));
+                        fixes.push(this.createStepNegOneFix(document, diag));
+                    }
+                    if (msg.includes("positive step value")) {
+                        fixes.push(this.createStepOneFix(document, diag));
+                    }
+                    if (msg.includes("negative step value")) {
+                        fixes.push(this.createStepNegOneFix(document, diag));
+                    }
+                }
+
+                if (msg.includes("Max-reserved keyword")) {
+                    fixes.push(this.createLetteriseFix(document, diag));
+                    fixes.push(this.createAddUnderscoreFix(document, diag));
                 }
 
                 // Add more cases as we build more diagnostics
@@ -54,6 +73,50 @@ export function registerCodeActions(context: vscode.ExtensionContext) {
 
             const range = diag.range;
             fix.edit.replace(document.uri, range, toPascalCase(document.getText(range)));
+
+            fix.diagnostics = [diag];
+            return fix;
+        }
+
+        private createLetteriseFix(document: vscode.TextDocument, diag: vscode.Diagnostic) {
+            const fix = new vscode.CodeAction("Refactor identifier into letters-structure", vscode.CodeActionKind.QuickFix);
+            fix.edit = new vscode.WorkspaceEdit();
+
+            const range = diag.range;
+            fix.edit.replace(document.uri, range, toLetter(document.getText(range)));
+
+            fix.diagnostics = [diag];
+            return fix;
+        }
+
+        private createStepOneFix(document: vscode.TextDocument, diag: vscode.Diagnostic) {
+            const fix = new vscode.CodeAction("Replace with step 1", vscode.CodeActionKind.QuickFix);
+            fix.edit = new vscode.WorkspaceEdit();
+
+            const range = diag.range;
+            fix.edit.replace(document.uri, range, (1).toString());
+
+            fix.diagnostics = [diag];
+            return fix;
+        }
+
+        private createStepNegOneFix(document: vscode.TextDocument, diag: vscode.Diagnostic) {
+            const fix = new vscode.CodeAction("Replace with step -1", vscode.CodeActionKind.QuickFix);
+            fix.edit = new vscode.WorkspaceEdit();
+
+            const range = diag.range;
+            fix.edit.replace(document.uri, range, (-1).toString());
+
+            fix.diagnostics = [diag];
+            return fix;
+        }
+
+        private createAddUnderscoreFix(document: vscode.TextDocument, diag: vscode.Diagnostic) {
+            const fix = new vscode.CodeAction("Add underscore to beginning", vscode.CodeActionKind.QuickFix);
+            fix.edit = new vscode.WorkspaceEdit();
+
+            const range = diag.range;
+            fix.edit.insert(document.uri, range.start, "_");
 
             fix.diagnostics = [diag];
             return fix;

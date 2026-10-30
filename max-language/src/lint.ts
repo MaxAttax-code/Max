@@ -54,6 +54,110 @@ export function toPascalCase(str: string): string {
         .join("");
 }
 
+/**
+ * Detects if a character is an emoji using Unicode ranges.
+ */
+function isEmoji(char: string): boolean {
+    if (!char) return false;
+    const codePoint = char.codePointAt(0);
+    if (codePoint === undefined) return false;
+
+    // Basic emoji ranges (covers most common emojis)
+    return (
+        (codePoint >= 0x1F600 && codePoint <= 0x1F64F) || // Emoticons
+        (codePoint >= 0x1F300 && codePoint <= 0x1F5FF) || // Misc symbols & pictographs
+        (codePoint >= 0x1F680 && codePoint <= 0x1F6FF) || // Transport & map symbols
+        (codePoint >= 0x2600 && codePoint <= 0x26FF) ||   // Misc symbols
+        (codePoint >= 0x2700 && codePoint <= 0x27BF) ||   // Dingbats
+        (codePoint >= 0x1F900 && codePoint <= 0x1F9FF) || // Supplemental symbols
+        (codePoint >= 0x1FA70 && codePoint <= 0x1FAFF)    // Symbols & pictographs
+    );
+}
+
+/**
+ * Returns if a given character string is one of the recognised greek letters below
+ * @param char The character to check
+ * @returns If the char was a recognised greek letter
+ */
+function isGreekLetter(char: string): boolean {
+    if (!char) return false;
+
+    return "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩΪΫάέήίΰαβγδεζηθικλμνξοπρςστυφχψωϊϋόύώ".includes(char);
+}
+
+/**
+ * Converts a string to a representative letter or code based on its first character.
+ * @param str - The string to letterise
+ */
+export function toLetter(str: string): string {
+    if (!str) return "_";
+
+    const firstChar = [...str][0]; // Handles surrogate pairs
+    const codePoint = firstChar.codePointAt(0);
+    // Base as '_' always
+    if (codePoint === undefined) return "_";
+
+    // Alphabet check: A-Z or a-z
+    const isLetter =
+        (codePoint >= 65 && codePoint <= 90) || // Uppercase
+        (codePoint >= 97 && codePoint <= 122);  // Lowercase
+
+    if (isLetter) { // Noice
+        return firstChar.toLowerCase();
+    }
+
+    // Underscore
+    if (codePoint === 95) {
+        return "_";
+    }
+
+    // A bunch of possible things to letterise!
+    switch (firstChar) {
+        case "?": return "qst";
+        case "!": return "exc";
+        case "$": return "dll";
+        case "%": return "pct";
+        case "^": return "pow";
+        case "*": return "ast";
+        case "/": return "fsl";
+        case "\\": return "bsl";
+        case "@": return "a_t";
+        case "&": return "amp";
+        case "(": return "lbr";
+        case ")": return "rbr";
+        case "#": return "hsh";
+        case "-": return "dsh";
+        case "+": return "pls";
+        case "=": return "eq";
+        case ".": return "dot";
+        case ",": return "cmm";
+        case "<": return "lar";
+        case ">": return "rar";
+        case "\"": return "dqt";
+        case "'": return "qt";
+        case "`": return "tck";
+        case "{": return "lcb";
+        case "}": return "rcb";
+        case "[": return "lbr";
+        case "]": return "rbr";
+        case "|": return "ln";
+        case "~": return "wgg";
+    }
+
+    // Emojis specifically!
+    if (isEmoji(firstChar)) {
+        return "emj";
+    }
+
+    // Greek letters specifically!
+    if (isGreekLetter(firstChar)) {
+        return "grk";
+    }
+
+    // Default for other symbols, I guess
+    return "x";
+}
+
 export function registerLint(context: vscode.ExtensionContext) {
     // Create a diagnostics bucket. This is for error linting
     const diagnostics = vscode.languages.createDiagnosticCollection("max");
@@ -276,6 +380,251 @@ export function registerLint(context: vscode.ExtensionContext) {
         }
 
         /**
+         * Parses the basic necessities of a for loop condition
+         * @param match - The for loop regex matching Reg
+         * @param name - The name of the variable declared
+         * @param value - The value declared upon the name
+         * @param upTo - Where the value is up to (i.e. the value after 'to')
+         * @param fullCondition - The entire condition found
+         */
+        function parseForNecessities(match: RegExpExecArray, name: string, value: string, upTo: string, step: string | null, fullCondition: string): void {
+            // Values that can help determine infinite loops
+                let valueAsNum: number | null = null;
+                let upToAsNum: number | null = null;
+                let stepAsNum: number | null = null;
+
+                let diagStart = document.positionAt(match.index + "for".length + fullCondition.indexOf(name));
+                let diagEnd = document.positionAt(match.index + "for".length + fullCondition.indexOf(name) + name.length);
+
+                // ----------------------------
+                // 2a. Validate name
+                // ----------------------------
+
+                if (!isValidIdentifier(name)) {
+                    diags.push(new vscode.Diagnostic(
+                        new vscode.Range(diagStart, diagEnd),
+                        `For loop declaration name must not be a Max-reserved keyword: ${name}`,
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                    return;
+                }
+
+                let isDuplicate = false;
+
+                const currentScopeIndex = scopeStack.length - 1;
+
+                for (let i = currentScopeIndex; i >= 0; i--) {
+                    const existing = scopeStack[i].vars.find(
+                        v => v.name === name
+                    );
+
+                    if (existing === undefined) continue;
+
+                    // YES! We do allow shadowing even in for loop declarations!
+                    if (existing.modifiers.lifecycleModifier !== LifecycleModifier.open) {
+                        isDuplicate = true;
+                        break;
+                    }
+
+                    break;
+                }
+
+                if (isDuplicate) {
+                    diags.push(new vscode.Diagnostic(
+                        new vscode.Range(diagStart, diagEnd),
+                        `Duplicate declaration name found: '${name}' cannot be redeclared within a for loop condition.`,
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                    return;
+                }
+
+                // ----------------------------
+                // 2b. Validate declared value
+                // ----------------------------
+
+                // Same stuff for diag positions...
+                diagStart = document.positionAt(match.index + "for".length + fullCondition.indexOf(value));
+                diagEnd = document.positionAt(match.index + "for".length + fullCondition.indexOf(value) + value.length);
+
+                // If it starts with a non-numeric letter, we **know** it's a variable referenced
+                if (/[a-zA-Z_]/.test(value.charAt(0))) {
+                    // Ensure these variables *do* exist
+                    for (let i = currentScopeIndex; i >= 0; i--) {
+                        const existing = scopeStack[i].vars.find(
+                            v => v.name === value
+                        );
+
+                        if (!existing) {
+                            diags.push(new vscode.Diagnostic(
+                                new vscode.Range(diagStart, diagEnd),
+                                `Cannot reference undeclared variable in for loop condition: ${value}`,
+                                vscode.DiagnosticSeverity.Error
+                            ))
+                        };
+                        return;
+                    }
+                }
+                else {
+                    valueAsNum = parseInt(value);
+                }
+
+                // -----------------------------------
+                // 2c. Validate up-to value and step
+                // -----------------------------------
+
+                diagStart = document.positionAt(match.index + "for".length + fullCondition.indexOf(upTo));
+                diagEnd = document.positionAt(match.index + "for".length + fullCondition.indexOf(upTo) + upTo.length);
+
+                // Clear copy-and-paste from before :)
+                if (/[a-zA-Z_]/.test(upTo.charAt(0))) {
+                    for (let i = currentScopeIndex; i >= 0; i--) {
+                        const existing = scopeStack[i].vars.find(
+                            v => v.name === upTo
+                        );
+
+                        if (!existing) {
+                            diags.push(new vscode.Diagnostic(
+                                new vscode.Range(diagStart, diagEnd),
+                                `Cannot reference undeclared variable in for loop condition: ${upTo}`
+                            ))
+                        };
+                        return;
+                    }
+                }
+                else {
+                    upToAsNum = parseInt(upTo);
+                }
+
+                let stepFound = true;
+
+                // Step is always base 1 if avoided
+                if (step === null) {
+                    stepAsNum = 1
+                    // This tells the validater that step doesn't exist in the 
+                    stepFound = false;
+                }
+                else if (/[a-zA-Z_]/.test(step.charAt(0))) {
+                    diagStart = document.positionAt(match.index + "for".length + fullCondition.indexOf(step));
+                    diagEnd = document.positionAt(match.index + "for".length + fullCondition.indexOf(step) + step.length);
+
+                    for (let i = currentScopeIndex; i >= 0; i--) {
+                        const existing = scopeStack[i].vars.find(
+                            v => v.name === step
+                        );
+
+                        if (!existing) {
+                            diags.push(new vscode.Diagnostic(
+                                new vscode.Range(diagStart, diagEnd),
+                                `Cannot reference undeclared variable in for loop condition: ${step}`
+                            ))
+                        };
+                        return;
+                    }
+                }
+                else {
+                    stepAsNum = parseInt(step);
+                }
+
+                // ----------------------------
+                // 2d. Validate number values
+                // ----------------------------
+
+                validateForValues(match, fullCondition, valueAsNum, upToAsNum, stepAsNum, stepFound)
+        }
+
+        function validateForValues(match: RegExpExecArray, fullCondition: string, value: number | null, upTo: number | null,
+                                    step: number | null, stepFound: boolean): void
+        {
+
+            // -----------------------------------
+            // 3a. Validate values and ranges
+            // -----------------------------------
+
+            function NaNDiagnostic() {
+                // Get the entire position, after all, no point of trying to calculate where NaN is in the string!
+                let diagStart = document.positionAt(match.index + "for".length);
+                let diagEnd = document.positionAt(match.index + fullCondition.length);
+                let diagRange = new vscode.Range(diagStart, diagEnd);
+
+                diags.push(new vscode.Diagnostic(
+                    diagRange,
+                    `For loop condition values must result in a valid integer`,
+                    vscode.DiagnosticSeverity.Error
+                ))
+                return;
+            }
+
+            if (Number.isNaN(value)) {
+                NaNDiagnostic();
+            }
+            if (Number.isNaN(upTo)) {
+                NaNDiagnostic();
+            }
+            if (Number.isNaN(step)) {
+                NaNDiagnostic();
+            }
+
+            // All are readable number values?
+            if (value !== null && upTo !== null && step !== null) {
+                // This highlights the ENTIRE '<value> to <value> part!
+                let diagStart = document.positionAt(match.index + "for".length + fullCondition.indexOf(value.toString()));
+                let diagEnd = document.positionAt(match.index + "for".length + fullCondition.indexOf(upTo.toString()) + upTo.toString().length);
+                let diagRange = new vscode.Range(diagStart, diagEnd);
+
+                // Specific for the step
+                let stepRange: vscode.Range | null = null;
+
+                if (stepFound) {
+                    let stepStart = document.positionAt(match.index + "for".length + fullCondition.indexOf(step.toString()));
+                    let stepEnd = document.positionAt(match.index + "for".length + fullCondition.indexOf(step.toString()) + step.toString().length);
+                    stepRange = new vscode.Range(stepStart, stepEnd);
+                }
+
+                // -----------------------------------
+                // 3b. Ensure no infinite loops
+                // -----------------------------------
+
+                if (step === 0) {
+                    diags.push(new vscode.Diagnostic(
+                        stepRange!,
+                        "Infinite for loop detected; Should not have a step value of 0",
+                        vscode.DiagnosticSeverity.Warning
+                    ))
+                    return;
+                }
+
+                // A decimal?? Nuh uh!
+                if (step.toString().includes(".")) {
+                    diags.push(new vscode.Diagnostic(
+                        // A decimal step value guarantees it was declared by the user
+                        stepRange!,
+                        "A for loop step value must be an integer",
+                        vscode.DiagnosticSeverity.Error
+                    ))
+                    return;
+                }
+
+                if (value > upTo && step > 0) {
+                    diags.push(new vscode.Diagnostic(
+                        stepRange ?? diagRange,
+                        "Infinite for loop detected! If you meant to step downwards, use a negative step value",
+                        vscode.DiagnosticSeverity.Warning
+                    ))
+                    return;
+                }
+
+                if (value < upTo && step < 0) {
+                    diags.push(new vscode.Diagnostic(
+                        stepRange ?? diagRange,
+                        "Infinite for loop detected! If you meant to step upwards, use a positive step value",
+                        vscode.DiagnosticSeverity.Warning
+                    ))
+                    return;
+                }
+            }
+        }
+
+        /**
          * Returns if a given string identifier is valid for naming
          * @param identifier The string identifier to check
          * @returns If the identifier is valid or not
@@ -343,7 +692,17 @@ export function registerLint(context: vscode.ExtensionContext) {
         const defineRegex = /\bdefine\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:(with\s*\([^)]*\))|(=>))(?:\s+return\s+([A-Za-z_][A-Za-z0-9_]*))?\s+\bdo\b/g;
 
         // Regex for a block start and end
-        const blockRegex = /\b(then|do|members|conclude)\b/g;
+        const blockRegex = /\b(then|do|members|case|conclude)\b/g;
+
+        // Regex to capture: if ... then
+        const ifRegex = /\bif\b([\s\S]*?)\bthen\b/g;
+
+        // Regex to capture: while ... do
+        const whileRegex = /\bwhile\b([\s\S]*?)\bdo\b/g;
+
+        // Regex to capture: for ... do
+        // Inside the condition is evaluated later
+        const forRegex = /\bfor\b([\s\S]*?)\bdo\b/g;
 
         // Regex to capture: enum <name> members
         // // The body is found by depth counting
@@ -454,7 +813,7 @@ export function registerLint(context: vscode.ExtensionContext) {
             if (!isValidIdentifier(identifier)) {
                 diags.push(new vscode.Diagnostic(
                     new vscode.Range(startPos, endPos),
-                    `Invalid task definition name, cannot use ${identifier}`,
+                    `Task definition name must not be a Max-reserved keyword, got: ${identifier}`,
                     vscode.DiagnosticSeverity.Error
                 ));
                 continue;
@@ -777,11 +1136,14 @@ export function registerLint(context: vscode.ExtensionContext) {
             // 3. Validate identifier
             // ----------------------------
 
+            const nameStart = document.positionAt(match.index + fullMatch.indexOf(identifier));
+            const nameEnd = document.positionAt(match.index + fullMatch.indexOf(identifier) + identifier.length);
+
             // No special stuff in there
             if (!isValidIdentifier(identifier)) {
                 diags.push(new vscode.Diagnostic(
-                    new vscode.Range(startPos, endPos),
-                    `Invalid declaration name, cannot use ${identifier}`,
+                    new vscode.Range(nameStart, nameEnd),
+                    `Invalid declaration name, must not be a Max-reserved keyword, got: ${identifier}`,
                     vscode.DiagnosticSeverity.Error
                 ));
                 continue;
@@ -943,6 +1305,95 @@ export function registerLint(context: vscode.ExtensionContext) {
 
 
         // ---------------------------- \\
+        // ------- IF REGEX LAWS ------ \\
+        // ---------------------------- \\
+
+
+        while ((match = ifRegex.exec(text)) !== null) {
+            const fullStatement = match[0];
+            const condition = match[1];
+            const startPos = document.positionAt(match.index + "if".length);
+            const endPos = document.positionAt(match.index + fullStatement.length - "then".length);
+
+            // Is it an empty condition?
+            if (condition.trim() === "") {
+                diags.push(new vscode.Diagnostic(
+                    new vscode.Range(startPos, endPos),
+                    "Empty condition for if statement",
+                    vscode.DiagnosticSeverity.Error
+                ))
+            }
+        }
+
+
+        // ---------------------------- \\
+        // ----- WHILE REGEX LAWS ----- \\
+        // ---------------------------- \\
+
+
+        while ((match = whileRegex.exec(text)) !== null) {
+            const fullStatement = match[0];
+            const condition = match[1];
+            const startPos = document.positionAt(match.index + "while".length);
+            const endPos = document.positionAt(match.index + fullStatement.length - "do".length);
+
+            // Is it an empty condition?
+            if (condition.trim() === "") {
+                diags.push(new vscode.Diagnostic(
+                    new vscode.Range(startPos, endPos),
+                    "Empty condition for while loop",
+                    vscode.DiagnosticSeverity.Error
+                ))
+            }
+            // Very specific case
+            else if (condition.trim() === "true") {
+                diags.push(new vscode.Diagnostic(
+                    new vscode.Range(startPos, endPos),
+                    "While loop should contain a reachable break statement to end infinite loop",
+                    vscode.DiagnosticSeverity.Information
+                ))
+            }
+        }
+
+
+        // ---------------------------- \\
+        // ------ FOR REGEX LAWS ------ \\
+        // ---------------------------- \\
+
+
+        while ((match = forRegex.exec(text)) !== null) {
+            const fullCondition = match[1];
+            let forStruct: RegExpExecArray | null;
+
+            // Captures: <name> = <number/name> to <number/name>
+            const basicFor = /\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(-?[0-9]*|[A-Za-z_][A-Za-z0-9_]*)\s+to\s+(-?[0-9]*|[A-Za-z_][A-Za-z0-9_]*)\s+/;
+            const stepFor = /\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(-?[0-9]*|[A-Za-z_][A-Za-z0-9_]*)\s+to\s+(-?[0-9]*|[A-Za-z_][A-Za-z0-9_]*)\s*,\s*step\s+(-?[0-9]*|[A-Za-z_][A-Za-z0-9_]*)\s+/;
+
+            // ----------------------------
+            // 1. Define Loop Structure
+            // ----------------------------
+
+            if ((forStruct = basicFor.exec(fullCondition)) !== null) {
+                const name = forStruct[1];
+                const value = forStruct[2];
+                const upTo = forStruct[3];
+
+                // Just parse the appropriate in the function
+                parseForNecessities(match, name, value, upTo, null, fullCondition);
+            }
+            else if ((forStruct = stepFor.exec(fullCondition)) !== null) {
+                const name = forStruct[1];
+                const value = forStruct[2];
+                const upTo = forStruct[3];
+                const step = forStruct[4];
+
+                // As normal! Although this time the step value is not null
+                parseForNecessities(match, name, value, upTo, step, fullCondition);
+            }
+        }
+
+
+        // ---------------------------- \\
         // ----- BLOCK REGEX LAWS ----- \\
         // ---------------------------- \\
 
@@ -958,7 +1409,7 @@ export function registerLint(context: vscode.ExtensionContext) {
                     startRange: new vscode.Range(startPos, endPos),
                     vars: []
                 });
-            } else if (keyword === "conclude") {
+            } else if (keyword === "conclude" || keyword === "case") {
                 // End the current scope
                 scopeStack.pop();
             }

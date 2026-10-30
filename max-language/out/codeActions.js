@@ -53,6 +53,23 @@ function registerCodeActions(context) {
                 if (msg.includes("in PascalCase")) {
                     fixes.push(this.createPascalCaseFix(document, diag));
                 }
+                if (msg.includes("Infinite for loop detected")) {
+                    // Branch to what the case of infinite loop is
+                    if (msg.includes("step value of 0")) {
+                        fixes.push(this.createStepOneFix(document, diag));
+                        fixes.push(this.createStepNegOneFix(document, diag));
+                    }
+                    if (msg.includes("positive step value")) {
+                        fixes.push(this.createStepOneFix(document, diag));
+                    }
+                    if (msg.includes("negative step value")) {
+                        fixes.push(this.createStepNegOneFix(document, diag));
+                    }
+                }
+                if (msg.includes("Max-reserved keyword")) {
+                    fixes.push(this.createLetteriseFix(document, diag));
+                    fixes.push(this.createAddUnderscoreFix(document, diag));
+                }
                 // Add more cases as we build more diagnostics
             }
             return fixes;
@@ -70,6 +87,38 @@ function registerCodeActions(context) {
             fix.edit = new vscode.WorkspaceEdit();
             const range = diag.range;
             fix.edit.replace(document.uri, range, (0, lint_1.toPascalCase)(document.getText(range)));
+            fix.diagnostics = [diag];
+            return fix;
+        }
+        createLetteriseFix(document, diag) {
+            const fix = new vscode.CodeAction("Refactor identifier into letters-structure", vscode.CodeActionKind.QuickFix);
+            fix.edit = new vscode.WorkspaceEdit();
+            const range = diag.range;
+            fix.edit.replace(document.uri, range, (0, lint_1.toLetter)(document.getText(range)));
+            fix.diagnostics = [diag];
+            return fix;
+        }
+        createStepOneFix(document, diag) {
+            const fix = new vscode.CodeAction("Replace with step 1", vscode.CodeActionKind.QuickFix);
+            fix.edit = new vscode.WorkspaceEdit();
+            const range = diag.range;
+            fix.edit.replace(document.uri, range, (1).toString());
+            fix.diagnostics = [diag];
+            return fix;
+        }
+        createStepNegOneFix(document, diag) {
+            const fix = new vscode.CodeAction("Replace with step -1", vscode.CodeActionKind.QuickFix);
+            fix.edit = new vscode.WorkspaceEdit();
+            const range = diag.range;
+            fix.edit.replace(document.uri, range, (-1).toString());
+            fix.diagnostics = [diag];
+            return fix;
+        }
+        createAddUnderscoreFix(document, diag) {
+            const fix = new vscode.CodeAction("Add underscore to beginning", vscode.CodeActionKind.QuickFix);
+            fix.edit = new vscode.WorkspaceEdit();
+            const range = diag.range;
+            fix.edit.insert(document.uri, range.start, "_");
             fix.diagnostics = [diag];
             return fix;
         }
