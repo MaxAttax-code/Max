@@ -225,7 +225,7 @@ impl Parser {
     /// After consuming the 'not', this calls `parse_expression`, otherwise `parse_factor`
     fn parse_unary(&mut self) -> Result<Expression, MaxError> {
         if self.eat(K::Not) {
-            let operand = self.parse_expression()?;
+            let operand = self.parse_comparison()?;
             let span = operand.span.clone();
             return Ok(Expression::new(ExpressionKind::Unary { op: UnaryOp::Not, operand: Box::new(operand) }, span));
         }
