@@ -60,7 +60,11 @@
             "patterns": [
                 {
                     "name": "keyword.control.max",
-                    "match": "\\b(if|then|elif|else|conclude|while|for|foreach|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield|using)\\b"
+                    "match": "\\b(if|then|elif|else|conclude|while|for|foreach|match|case|do|maybe|not|and|or|to|step|in|of|as|resort|say|nil|with|return|yield|using)\\b"
+                },
+                {
+                    "name": "keyword.flow.max",
+                    "match": "\\b(break|skip)\\b"
                 }
             ]
         },
@@ -194,7 +198,7 @@
             "patterns": [
                 {
                     "comment": "Matches standalone and member task calls too, e.g. foo() or obj.bar()",
-                    "match": "(?:(\\b[a-zA-Z_][a-zA-Z0-9_]*)\\s*\\.)?\\s*(\\b[a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+                    "match": "(?:(\\b[a-zA-Z_][a-zA-Z0-9_]*)\\s*\\.)?\\s*(\\b[a-zA-Z_][a-zA-Z0-9_]*)(?=\\()",
                     "captures": {
                         "1": {
                             "name": "variable.other.object.max"
@@ -210,19 +214,14 @@
         "properties": {
             "patterns": [
                 {
-                    "comment": "Matches member-accessed properties (e.g., obj.length), excluding method calls which have a parenthesis following them. You can see at the end it ensures the property is not followed by parenthesis in order to accept it",
-                    "match": "(?:(\\b[a-zA-Z_][a-zA-Z0-9_]*)\\s*\\.)\\s*(\\b[a-zA-Z_][a-zA-Z0-9_]*)\\b(?!\\s*\\()",
+                    "comment": "Matches member-accessed properties (e.g., obj.length), excluding method calls. Only the second capture is cared for",
+                    "match": "\\.(?!(\\s*\\())([a-zA-Z_][a-zA-Z0-9_]*)\\b(?!\\s*\\()",
                     "captures": {
-                        "1": {
-                            "name": "variable.other.object.max"
-                        },
-                        "2": {
-                            "name": "entity.name.property.max"
-                        }
+                        "2": { "name": "entity.name.property.max" }
                     }
                 }
             ]
-        },
+            },
 
         "types": {
             "patterns": [
