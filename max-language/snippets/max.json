@@ -67,5 +67,25 @@
             "conclude"
         ],
         "description": "Creates a basic and editable task definition"
+    },
+
+    "Enum Definition": {
+        "prefix": "enum",
+        "body": [
+            "enum Name members",
+            "\t$0",
+            "conclude"
+        ],
+        "description": "Creates an empty enum definition"
+    },
+
+    "Enum Submembers": {
+        "prefix": "submem",
+        "body": [
+            "member $ members",
+            "\t$0",
+            "conclude,"
+        ],
+        "description": "Creates an enum member with empty sub members"
     }
 }
