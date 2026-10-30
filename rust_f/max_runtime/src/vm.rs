@@ -243,19 +243,19 @@ impl Value {
         }
     }
 
-    /// Some(true/false) when known, None for a possible that is still unresolved
-    fn truth_value(&self) -> Option<bool> {
+    /// Decides if a value is truthy or not
+    pub fn truthiness(&self) -> Option<bool> {
         match self {
             Value::Boolean(b) => Some(*b),
-            Value::Possible(p) => p.borrow().current,
             Value::Nil => Some(false),
-            other => panic!("'and' and 'or' only work on boolean values, got {}", other),
+            Value::Possible(p) => p.borrow().current,
+            _ => Some(true),
         }
     }
 
     /// Performs the logic AND gate on two values
     pub fn logical_and(left: &Value, right: &Value) -> Value {
-        match (left.truth_value(), right.truth_value()) {
+        match (left.truthiness(), right.truthiness()) {
             (Some(false), _) | (_, Some(false)) => Value::Boolean(false),
             (Some(true), Some(true)) => Value::Boolean(true),
             _ => Value::new_possible(),
@@ -264,7 +264,7 @@ impl Value {
 
     /// Performs the logic OR gate on two valuess
     pub fn logical_or(left: &Value, right: &Value) -> Value {
-        match (left.truth_value(), right.truth_value()) {
+        match (left.truthiness(), right.truthiness()) {
             (Some(true), _) | (_, Some(true)) => Value::Boolean(true),
             (Some(false), Some(false)) => Value::Boolean(false),
             _ => Value::new_possible(),
@@ -1340,24 +1340,13 @@ impl VirtualMachine {
 
 
                 Op::Not => {
-                    if let Some(val) = self.stack.pop() {
-                        // Simply inverse value depending on what value we are performing upon
-                        match val {
-                            Value::Boolean(boolean) => self.stack.push(Self::negate_boollike(&Value::Boolean(boolean))),
-
-                            Value::Possible(possible) => {
-                                if let Some(value) = possible.borrow().current {
-                                    let new = Self::negate_boollike(&Value::Boolean(value));
-                                    self.stack.push(new);
-                                }
-                                else {
-                                    self.stack.push(Value::new_possible());
-                                }
-                            }
-                            
-                            _ => panic!("Can only perform 'not' inversing upon boolean-evaluated values!")
-                        }
-                    }
+                    let val = self.stack.pop().unwrap_or(Value::Nil);
+                    
+                    // Simply inverse value depending on what value was given
+                    self.stack.push(match val.truthiness() {
+                        Some(truth) => Value::Boolean(!truth),
+                        None => Value::new_possible(),
+                    });
                 }
 
                 Op::Negate => {
@@ -1552,24 +1541,9 @@ impl VirtualMachine {
                 // This checks for the condition before it to check if it can jump or not
                 Op::JumpIfFalse(jump_to) => {
                     let condition = self.stack.pop().unwrap_or(Value::Nil);
-                    
-                    match condition {
-                        // When false, DUH. Oh and nil I guess...
-                        Value::Boolean(false) | Value::Nil => {
-                            ip = *jump_to;
-                            continue;
-                        }
-
-                        // Gotta handle em possible situations too!
-                        Value::Possible(possible) => {
-                            let possible = possible.borrow();
-                            if let Some(boolean) = possible.current && boolean == false{
-                                ip = *jump_to;
-                                continue;
-                            }
-                        }
-
-                        _ => () // You can't *break*, that'd break out the entire VM loop!
+                    if condition.truthiness() == Some(false) {
+                        ip = *jump_to;
+                        continue;
                     }
                 }
                 
