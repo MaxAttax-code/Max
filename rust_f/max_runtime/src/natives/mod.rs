@@ -111,7 +111,7 @@ impl NativeTask {
 
         // An index to keep track of which parameter we are on
         let mut param_idx = 0;
-
+        
         // Through each argument
         for (arg_idx, arg) in args.iter().enumerate() {
             // Find which parameter spec applies to the current argument index
@@ -229,7 +229,7 @@ impl NativeTask {
             if !expected_type.is_assignable_to(&arg_type) {
                 panic!(
                     "Native task '{}' argument {} type mismatch: expected {:?}, got {:?}",
-                    task_name, arg_idx, expected_type, arg
+                    task_name, arg_idx + 1, expected_type, arg_type
                 );
             }
         }

@@ -63,14 +63,14 @@ pub struct RuntimeLambda {
 /// A special structure that allows a list value to be borrowed via an RC reference
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListValue {
-    pub element_type: Option<String>,
+    pub element_type: Option<MaxType>,
     pub items: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictionaryValue {
-    pub key_type: Option<String>,
-    pub value_type: Option<String>,
+    pub key_type: Option<MaxType>,
+    pub value_type: Option<MaxType>,
     pub allow_duplicates: Option<bool>,
     pub keys: Vec<Value>,
     pub values: Vec<Value>,
@@ -272,14 +272,14 @@ impl Value {
     }
 
     /// Helper function to quickly create a list value containing a reference of the given arguments.
-    pub fn new_list(element_type: Option<String>, items: Vec<Value>) -> Self {
+    pub fn new_list(element_type: Option<MaxType>, items: Vec<Value>) -> Self {
         Value::List(Rc::new(RefCell::new(ListValue { element_type, items })))
     }
 
     /// Helper function to quickly create a dictionary value via all the arguments given.
     pub fn new_dictionary(
-        key_type: Option<String>,
-        value_type: Option<String>,
+        key_type: Option<MaxType>,
+        value_type: Option<MaxType>,
         allow_duplicates: Option<bool>,
         keys: Vec<Value>,
         values: Vec<Value>,
@@ -524,8 +524,8 @@ impl Value {
                 None => MaxType::PossibleType,
             },
 
-            Value::List(..) => MaxType::ListType(None),
-            Value::Dictionary(..) => MaxType::DictionaryType(None, None),
+            Value::List(..) => Value::get_iterable_type_name(&self),
+            Value::Dictionary(..) => Value::get_iterable_type_name(&self),
 
             Value::Coroutine(..) => MaxType::CoroutineType,
             // Keep in mind that the lambdas arity is kept within it's definition (metadata)
@@ -535,6 +535,22 @@ impl Value {
             Value::EnumMember(memb) => MaxType::EnumType(memb.enum_name.clone()),
 
             Value::Nil => MaxType::NoType
+        }
+    }
+
+    pub fn get_iterable_type_name(val: &Value) -> MaxType {
+        match val {
+            Value::List(l) => MaxType::ListType(l.borrow().element_type.clone().map(Box::new)),
+
+            Value::Dictionary(d) => {
+                let d = d.borrow();
+                MaxType::DictionaryType(
+                    d.key_type.clone().map(Box::new),
+                    d.value_type.clone().map(Box::new),
+                )
+            }
+
+            _ => val.get_type()
         }
     }
 
@@ -928,6 +944,8 @@ impl VirtualMachine {
                     // Lotta type checking!
                     if let Some(type_checkable) = &var_info.max_type {
                         Self::ensure_compatibility(type_checkable, &val);
+                        // Also attach the element types to the given val if needed
+                        Self::tag_collection_type(type_checkable, &val);
                     }
 
                     let entry = VariableEntry::new(
@@ -2513,14 +2531,6 @@ impl VirtualMachine {
             target_type = args[0].get_runtime_typename();
         }
 
-        let target_str = target_type.as_deref();
-
-        // Look up the native function using target_str (which will be None for globals)
-        if let Some(native_fn) = self.native_registry.attempt_get_task(target_str, &call.name) {
-            // And simply call!
-            return (native_fn.function)(self, args);
-        }
-
         // Creating binding to not drop value whilst in use
         let binding = target_type.unwrap_or(String::new());
         
@@ -2963,7 +2973,32 @@ impl VirtualMachine {
     /// Calls `MaxType::check_value_compatibility()` to do so.
     pub fn ensure_compatibility(expected_type: &MaxType, value: &Value) {
         if !Self::check_value_compatibility(expected_type, value) {
-            panic!("Invalid Type Compatibility! Expected type '{}', got Value '{}'", expected_type, value);
+            panic!("Invalid Type Compatibility! Expected type '{}', got Value '{}'", expected_type, value.get_type());
+        }
+    }
+
+    /// Stamps a type unto a value, depending on what kind of iterable type is given.
+    /// This only works on values that don't already have element types
+    fn tag_collection_type(expected: &MaxType, val: &Value) {
+        match (expected, val) {
+            (MaxType::ListType(Some(inner)), Value::List(list)) => {
+                let mut list = list.borrow_mut();
+                if list.element_type.is_none() {
+                    list.element_type = Some((**inner).clone());
+                }
+            }
+
+            (MaxType::DictionaryType(key, value), Value::Dictionary(dict)) => {
+                let mut dict = dict.borrow_mut();
+                if dict.key_type.is_none() {
+                    dict.key_type = key.as_ref().map(|k| (**k).clone());
+                }
+                if dict.value_type.is_none() {
+                    dict.value_type = value.as_ref().map(|v| (**v).clone());
+                }
+            }
+
+            _ => {}
         }
     }
 
