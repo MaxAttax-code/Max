@@ -75,7 +75,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
         NativeTask::new(
             "allowDuplicates",
             None,
-            vec![ParamSpec::required(BooleanType)],
+            vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required(BooleanType)],
             self::dictionary_allow_duplicates
         )
     );
@@ -85,7 +85,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
         NativeTask::new(
             "attemptGet",
             None,
-            vec![ParamSpec::required_none()],
+            vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
             self::dictionary_attempt_get
         )
     );

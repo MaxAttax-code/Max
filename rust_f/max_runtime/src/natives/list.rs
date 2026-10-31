@@ -232,9 +232,7 @@ pub fn list_add(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     let mut list = list.borrow_mut();
 
     if let Some(element_type) = &list.element_type {
-        let expected = MaxType::string_name_to_max(element_type);
-
-        VirtualMachine::ensure_compatibility(&expected, item);
+        VirtualMachine::ensure_compatibility(element_type, item);
     }
 
     // Simply push to the list, as it is a Mutable reference, so it automatically changes for us without having to reassign anything!
@@ -261,9 +259,7 @@ pub fn list_add_range(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     for element in args_iter {
         // Yo ho ho! It's a repeating flow!
         if let Some(element_type) = &list.element_type {
-            let expected = MaxType::string_name_to_max(element_type);
-
-            VirtualMachine::ensure_compatibility(&expected, &element);
+            VirtualMachine::ensure_compatibility(element_type, &element);
         }
 
         list.items.push(element);
@@ -283,10 +279,8 @@ pub fn list_concatenate(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     let appendable = appendable.borrow();
 
     if let Some(element_type) = &list.element_type {
-        let expected = MaxType::string_name_to_max(element_type);
-
         for item in &appendable.items {
-            VirtualMachine::ensure_compatibility(&expected, item);
+            VirtualMachine::ensure_compatibility(element_type, item);
         }
     }
 
@@ -309,10 +303,8 @@ pub fn list_combine(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     let appendable = appendable.borrow();
 
     if let Some(element_type) = &list.element_type {
-        let expected = MaxType::string_name_to_max(element_type);
-
         for item in &appendable.items {
-            VirtualMachine::ensure_compatibility(&expected, item);
+            VirtualMachine::ensure_compatibility(element_type, item);
         }
     }
 
@@ -343,9 +335,7 @@ pub fn list_insert(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     let mut list = list.borrow_mut();
 
     if let Some(element_type) = &list.element_type {
-        let expected = MaxType::string_name_to_max(element_type);
-
-        VirtualMachine::ensure_compatibility(&expected, item);
+        VirtualMachine::ensure_compatibility(element_type, item);
     }
 
     list.items.insert(*index as usize, item.clone());
@@ -542,7 +532,7 @@ pub fn list_get_enumerator(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value 
 
     // Now into one dictionary! With the types very nicely put for us too :)))))
     // We always allow true, because a list can have duplicates whenever it wants
-    let new_dict = Value::new_dictionary(Some(String::from("IntegerType")), list.element_type.clone(), Some(true), indexes, items);
+    let new_dict = Value::new_dictionary(Some(MaxType::StringType), list.element_type.clone(), Some(true), indexes, items);
     new_dict
 }
 

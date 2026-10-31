@@ -1,5 +1,5 @@
 use crate::{natives::{NativeRegistry, ParamSpec}, vm::{VirtualMachine, Value}};
-use max_bytecode::MaxType::*;
+use max_bytecode::MaxType::{self, *};
 use super::{NativeTask, NativeProperty, NativeTarget};
 
 
@@ -179,7 +179,7 @@ pub fn string_split(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
         split_list.push(Value::String(String::from(sub)));
     }
 
-    Value::new_list(Some(String::from("StringType")), split_list)
+    Value::new_list(Some(MaxType::StringType), split_list)
 }
 
 pub fn string_to_characters(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
@@ -196,7 +196,7 @@ pub fn string_to_characters(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value
         char_list.push(Value::String(char.to_string()));
     }
 
-    Value::new_list(Some(String::from("StringType")), char_list)
+    Value::new_list(Some(MaxType::StringType), char_list)
 }
 
 pub fn string_replace(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
