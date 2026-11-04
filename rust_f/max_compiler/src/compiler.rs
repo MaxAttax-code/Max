@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use max_bytecode as bc;
+use max_bytecode::self as bc;
 
 use crate::{ast::*, error::MaxError};
 
@@ -21,7 +21,8 @@ fn error(span: Span, message: impl Into<String>) -> MaxError {
 /// The names the compiler needs from the native registry
 #[derive(Debug, Default, Clone)]
 pub struct NativeNames {
-    pub static_modules: HashSet<String>,
+    pub module_tasks: HashSet<String>,
+    pub module_properties: HashSet<String>,
     pub global_tasks: HashSet<String>,
 }
 
@@ -145,6 +146,7 @@ struct EnumNode<'s> {
 pub struct Compiler<'a> {
     /// Our CompileContext for the Compiler
     ctx: &'a CompileContext,
+    module_name: &'a str,
     dependencies: &'a [String],
 
     /// All the OpCodes for the `VirtualMachine` to read
@@ -169,9 +171,10 @@ pub struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn new(ctx: &'a CompileContext, dependencies: &'a [String]) -> Self {
+    pub fn new(ctx: &'a CompileContext, module_name: &'a str, dependencies: &'a [String]) -> Self {
         Compiler {
             ctx,
+            module_name,
             dependencies,
             ops: Vec::new(),
             tasks: HashMap::new(),
@@ -193,6 +196,7 @@ impl<'a> Compiler<'a> {
     fn new_child(&self) -> Compiler<'a> {
         Compiler {
             ctx: self.ctx,
+            module_name: self.module_name,
             dependencies: self.dependencies,
             ops: Vec::new(),
             tasks: self.tasks.clone(),
@@ -423,7 +427,17 @@ impl<'a> Compiler<'a> {
     fn convert_parameters(&self, parameters: &[Parameter]) -> Result<Vec<bc::Parameter>, MaxError> {
         parameters
             .iter()
-            .map(|p| Ok(bc::Parameter { max_type: self.convert_optional_type(&p.type_ref)?, name: p.name.clone() }))
+            .map(|p| {
+                let typing = self.convert_optional_type(&p.type_ref)?;
+
+                let parameter_kind = match &p.kind {
+                    ParameterKind::Required => bc::ParamKind::Required(typing),
+                    ParameterKind::Optional => bc::ParamKind::Optional(typing),
+                    ParameterKind::Variadic => bc::ParamKind::Variadic(typing),
+                };
+
+                Ok(bc::Parameter { name: p.name.clone(), parameter_kind })
+            })
             .collect()
     }
 
@@ -1022,8 +1036,27 @@ impl<'a> Compiler<'a> {
                         .insert(parameter.name.clone(), VarInfo::default());
                 }
 
+                if task.is_native {
+                    let key = format!("{}.{}", self.module_name, task.name);
+                    // Native task -> Must be in module tasks!
+                    if !self.ctx.natives.module_tasks.contains(&key) {
+                        return Err(error(task.name_span, format!("No native task '{key}' is registered")));
+                    }
+                }
+
                 self.task_depth += 1;
-                let result = self.compile_statements(&task.body);
+                let result = if task.is_native {
+                    self.emit(bc::Op::CallNativeForward(bc::TaskCallOperand {
+                        target: Some(self.module_name.to_string()),
+                        name: task.name.clone(),
+                        argument_count: 0, // This is decided at runtime
+                        is_member_access: false,
+                    }));
+                    self.emit(bc::Op::ReturnValue);
+                    Ok(())
+                } else {
+                    self.compile_statements(&task.body)
+                };
                 self.task_depth -= 1;
                 result?;
 
@@ -1075,18 +1108,6 @@ impl<'a> Compiler<'a> {
             if let ExpressionKind::Variable(target_name) = &target.kind {
                 // A variable of the same name hides any module
                 let shadowed = self.is_variable_declared(target_name);
-
-                // Native static module: math.sqrt(x). The module name is NOT pushed as `self`
-                if !shadowed && self.ctx.natives.static_modules.contains(target_name) {
-                    self.compile_arguments(arguments)?;
-                    self.emit(bc::Op::CallNative(bc::TaskCallOperand {
-                        target: Some(target_name.clone()),
-                        name: member.clone(),
-                        argument_count: arguments.len() as u64,
-                        is_member_access: false,
-                    }));
-                    return Ok(());
-                }
 
                 // Imported module task: other.helper(x)
                 if !shadowed
@@ -1247,11 +1268,10 @@ impl<'a> Compiler<'a> {
     fn compile_member_access(&mut self, target: &Expression, member: &str, span: Span) -> Result<(), MaxError> {
         let access_type = self.resolve_member_access_type(target, member, span)?;
 
-        // A property of a native static module, e.g. math.PI. It has no `self` to push
-        if access_type == bc::MemberAccessType::None
-            && let ExpressionKind::Variable(name) = &target.kind
+        if let ExpressionKind::Variable(name) = &target.kind
             && !self.is_variable_declared(name)
-            && self.ctx.natives.static_modules.contains(name)
+            && self.ctx.symbols.contains_key(name)   // a `using` is required for an import
+            && self.ctx.natives.module_properties.contains(&format!("{name}.{member}")) // And it's a property
         {
             self.emit(bc::Op::CallNative(bc::TaskCallOperand {
                 target: Some(name.clone()),
