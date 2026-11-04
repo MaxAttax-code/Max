@@ -1,0 +1,5 @@
+define native function isLeapYear with (year as int) return boolean;
+
+define native function timeSince with (seconds as float) return float;
+
+define native function formatDate with (seconds as float) return string;

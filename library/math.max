@@ -1,0 +1,59 @@
+// All floats can accept integers too
+
+define native function sqrt with (number as float) return float;
+
+define native function cbrt with (number as float) return float;
+
+define native function root with (number1 as float, number2 as float) return float;
+
+define native function log10 with (number as float) return float;
+
+define native function log with (number1 as float, number2 as float) return float;
+
+define native function loge with (number as float) return float;
+
+define native function cos with (number as float) return float;
+
+define native function sin with (number as float) return float;
+
+define native function tan with (number as float) return float;
+
+define native function sec with (number as float) return float;
+
+define native function cosec with (number as float) return float;
+
+define native function cotan with (number as float) return float;
+
+define native function iCos with (number as float) return float;
+
+define native function iSin with (number as float) return float;
+
+define native function iTan with (number as float) return float;
+
+define native function iSec with (number as float) return float;
+
+define native function iCosec with (number as float) return float;
+
+define native function iCotan with (number as float) return float;
+
+define native function cosh with (number as float) return float;
+
+define native function sinh with (number as float) return float;
+
+define native function tanh with (number as float) return float;
+
+define native function iCosh with (number as float) return float;
+
+define native function iSinh with (number as float) return float;
+
+define native function iTanh with (number as float) return float;
+
+define native function reciprocal with (number as float) return float;
+
+define native function floor with (number as float) return float;
+
+define native function ceil with (number as float) return float;
+
+define native function round with (number as float) return float;
+
+define native function abs with (number as float) return float;

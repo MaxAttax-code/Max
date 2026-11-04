@@ -1,0 +1,11 @@
+define native function randInt with (min as int, max as int) return int;
+
+define native function random with (min as float, max as float) return float;
+
+define native function shuffle with (toShuffle as list) return list;
+
+define native function shuffleNow with (toShuffle as list);
+
+define native function weightedChoice with (choices as list, weights... as int);
+
+define native function seed with (seedNumber as int);
