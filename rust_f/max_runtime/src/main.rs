@@ -38,11 +38,12 @@ fn main() {
 
     let registry = natives::NativeRegistry::new();
     let native_names = NativeNames {
-        static_modules: registry.static_module_names(),
+        module_tasks: registry.module_task_keys(),
+        module_properties: registry.module_property_keys(),
         global_tasks: registry.global_task_names(),
     };
 
-    let program = match compile_project(&project_dir.join("src"), native_names) {
+    let program = match compile_project(&project_dir.join("src"), &project_dir.join("library"), native_names) {
         Ok(program) => program,
         Err(error) => {
             eprintln!("{error}");
