@@ -124,10 +124,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
     This returns the value as a Dictionary of Character: Amount
 */
 pub fn iterables_count_chars(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let string = match args[0].clone() {
-        Value::String(s) => s,
-
-        _ => panic!("iterables.countChars expects a string argument")
+    let Value::String(string) = &args[0] else {
+        panic!("iterables.countChars expects a string argument")
     };
 
     // We have to get the keys and values as individual vectors
@@ -146,10 +144,8 @@ pub fn iterables_count_chars(_vm: &mut VirtualMachine, args: Vec<Value>) -> Valu
 
 // Same as other function but no dups
 pub fn iterables_count_chars_existing(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let string = match args[0].clone() {
-        Value::String(s) => s,
-
-        _ => panic!("iterables.countExistingChars expects a string argument")
+    let Value::String(string) = &args[0] else {
+        panic!("iterables.countExistingChars expects a string argument")
     };
 
     let mut chars: Vec<Value> = vec![];
@@ -181,7 +177,7 @@ pub fn iterables_to_dictionary(_vm: &mut VirtualMachine, args: Vec<Value>) -> Va
 
 pub fn iterables_mode(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     // Either list or dict
-    let (lvalue, dvalue) = match args[0].clone() {
+    let (lvalue, dvalue) = match &args[0] {
         Value::List(l) => (Some(l), None),
         Value::Dictionary(d) => (None, Some(d)),
         _ => (None, None)
@@ -241,10 +237,8 @@ pub fn iterables_mode(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 
 /// This is called median, but it is used for the native method `middleValue`
 pub fn iterables_median(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let list = match args[0].clone() {
-        Value::List(l) => l,
-
-        _ => panic!("iterables.median expects a list")
+    let Value::List(list) = &args[0] else {
+        panic!("iterables.median expects a list")
     };
     let list = list.borrow();
 
@@ -262,10 +256,8 @@ pub fn iterables_median(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn iterables_range(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let list = match args[0].clone() {
-        Value::List(l) => l,
-
-        _ => panic!("iterables.range expects a list")
+    let Value::List(list) = &args[0] else {
+        panic!("iterables.range expects a list")
     };
     let list = list.borrow();
     
@@ -359,10 +351,8 @@ pub fn iterables_in_common(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value 
 }
 
 pub fn iterables_flatten(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let list = match args[0].clone() {
-        Value::List(l) => l,
-
-        _ => panic!("iterables.flatten expects a list")
+    let Value::List(list) = &args[0] else {
+        panic!("iterables.flatten expects a list")
     };
     let list = list.borrow();
 

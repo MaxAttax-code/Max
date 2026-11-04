@@ -431,8 +431,8 @@ pub fn math_root_of(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_log10(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let base_value = args[0].clone();
-    let base_as = value_to_f64(&base_value);
+    let base_value = &args[0];
+    let base_as = value_to_f64(base_value);
 
 
     if let Some(base) = base_as {
@@ -480,8 +480,8 @@ pub fn math_log(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_loge(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let base_value = args[0].clone();
-    let base_as = value_to_f64(&base_value);
+    let base_value = &args[0];
+    let base_as = value_to_f64(base_value);
 
     if let Some(base) = base_as {
         if base < 0_f64 {
@@ -508,8 +508,8 @@ pub fn math_loge(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 
 /// Please keep in mind that all trigonometric ratio functions return in radians or require radian values
 pub fn math_cos(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let angle_value = args[0].clone();
-    let angle_as = value_to_f64(&angle_value);
+    let angle_value = &args[0];
+    let angle_as = value_to_f64(angle_value);
 
     if let Some(angle) = angle_as {
         // This is computed as radians
@@ -535,8 +535,8 @@ pub fn math_sin(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_tan(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let angle_value = args[0].clone();
-    let angle_as = value_to_f64(&angle_value);
+    let angle_value = &args[0];
+    let angle_as = value_to_f64(angle_value);
 
     if let Some(angle) = angle_as {
         let res = angle.tan();
@@ -548,8 +548,8 @@ pub fn math_tan(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_sec(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let angle_value = args[0].clone();
-    let angle_as = value_to_f64(&angle_value);
+    let angle_value = &args[0];
+    let angle_as = value_to_f64(angle_value);
 
     if let Some(angle) = angle_as {
         let res = angle.cos();
@@ -567,8 +567,8 @@ pub fn math_sec(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_cosec(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let angle_value = args[0].clone();
-    let angle_as = value_to_f64(&angle_value);
+    let angle_value = &args[0];
+    let angle_as = value_to_f64(angle_value);
 
     if let Some(angle) = angle_as {
         let res = angle.sin();
@@ -583,8 +583,8 @@ pub fn math_cosec(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_cotan(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let angle_value = args[0].clone();
-    let angle_as = value_to_f64(&angle_value);
+    let angle_value = &args[0];
+    let angle_as = value_to_f64(angle_value);
 
     if let Some(angle) = angle_as {
         let res = angle.tan();
@@ -600,11 +600,11 @@ pub fn math_cotan(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_isec(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num_value = args[0].clone();
-    let num_as = value_to_f64(&num_value);
+    let num_value = &args[0];
+    let num_as = value_to_f64(num_value);
 
     if let Some(num) = num_as {
-        if num < 1.0 || num > -1.0 {
+        if num < 1.0 && num > -1.0 {
             panic!("math.iSec requires a value that is not between 1.0 and -1.0")
         }
         // Yes, we just do a reciprocal then proceed to do inverse norm trig
@@ -618,12 +618,12 @@ pub fn math_isec(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_icosec(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num_value = args[0].clone();
-    let num_as = value_to_f64(&num_value);
+    let num_value = &args[0];
+    let num_as = value_to_f64(num_value);
 
     if let Some(num) = num_as {
         // Interestingly, not allows between 1 and -1
-        if num < 1.0 || num > -1.0 {
+        if num < 1.0 && num > -1.0 {
             panic!("math.iCosec requires a value that is not between 1.0 and -1.0")
         }
         let res = (1.0 / num).asin();
@@ -635,8 +635,8 @@ pub fn math_icosec(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_icotan(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num_value = args[0].clone();
-    let num_as = value_to_f64(&num_value);
+    let num_value = &args[0];
+    let num_as = value_to_f64(num_value);
 
     if let Some(num) = num_as {
         if num == 0.0 {
@@ -652,8 +652,8 @@ pub fn math_icotan(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_cosh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let angle_value = args[0].clone();
-    let angle_as = value_to_f64(&angle_value);
+    let angle_value = &args[0];
+    let angle_as = value_to_f64(angle_value);
 
     if let Some(angle) = angle_as {
         let res = angle.cosh();
@@ -665,8 +665,8 @@ pub fn math_cosh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_sinh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let angle_value = args[0].clone();
-    let angle_as = value_to_f64(&angle_value);
+    let angle_value = &args[0];
+    let angle_as = value_to_f64(angle_value);
 
     if let Some(angle) = angle_as {
         let res = angle.sinh();
@@ -678,8 +678,8 @@ pub fn math_sinh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_tanh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let angle_value = args[0].clone();
-    let angle_as = value_to_f64(&angle_value);
+    let angle_value = &args[0];
+    let angle_as = value_to_f64(angle_value);
 
     if let Some(angle) = angle_as {
         let res = angle.tanh();
@@ -691,8 +691,8 @@ pub fn math_tanh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_icos(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num_value = args[0].clone();
-    let num_as = value_to_f64(&num_value);
+    let num_value = &args[0];
+    let num_as = value_to_f64(num_value);
 
     if let Some(num) = num_as {
         // Let it be real!
@@ -710,8 +710,8 @@ pub fn math_icos(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_isin(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num_value = args[0].clone();
-    let num_as = value_to_f64(&num_value);
+    let num_value = &args[0];
+    let num_as = value_to_f64(num_value);
 
     if let Some(num) = num_as {
         if num > 1_f64 || num < -1_f64 {
@@ -726,8 +726,8 @@ pub fn math_isin(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_itan(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num_value = args[0].clone();
-    let num_as = value_to_f64(&num_value);
+    let num_value = &args[0];
+    let num_as = value_to_f64(num_value);
 
     if let Some(num) = num_as {
         let res = num.atan();
@@ -739,8 +739,8 @@ pub fn math_itan(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_icosh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num_value = args[0].clone();
-    let num_as = value_to_f64(&num_value);
+    let num_value = &args[0];
+    let num_as = value_to_f64(num_value);
 
     if let Some(num) = num_as {
         // Must be more than 1.0
@@ -758,8 +758,8 @@ pub fn math_icosh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_isinh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num_value = args[0].clone();
-    let num_as = value_to_f64(&num_value);
+    let num_value = &args[0];
+    let num_as = value_to_f64(num_value);
 
     if let Some(num) = num_as {
         // Yoohoo! We don't like math errors
@@ -775,8 +775,8 @@ pub fn math_isinh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_itanh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num_value = args[0].clone();
-    let num_as = value_to_f64(&num_value);
+    let num_value = &args[0];
+    let num_as = value_to_f64(num_value);
 
     if let Some(num) = num_as {
         // There are limits to this as well!
@@ -799,7 +799,7 @@ pub fn math_itanh(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 */
 
 pub fn math_reciprocal(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num = match value_to_f64(&args[0].clone()) {
+    let num = match value_to_f64(&args[0]) {
         Some(num_val) => num_val,
         None => panic!("Expected a valid number value for math.reciprocal")
     };
@@ -811,7 +811,7 @@ pub fn math_reciprocal(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_floor(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num = match value_to_f64(&args[0].clone()) {
+    let num = match value_to_f64(&args[0]) {
         Some(num_val) => num_val,
         None => panic!("Expected a valid number value for math.floor")
     };
@@ -822,7 +822,7 @@ pub fn math_floor(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_ceil(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num = match value_to_f64(&args[0].clone()) {
+    let num = match value_to_f64(&args[0]) {
         Some(num_val) => num_val,
         None => panic!("Expected a valid number value for math.ceil")
     };
@@ -833,7 +833,7 @@ pub fn math_ceil(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_round(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num = match value_to_f64(&args[0].clone()) {
+    let num = match value_to_f64(&args[0]) {
         Some(num_val) => num_val,
         None => panic!("Expected a valid number value for math.round")
     };
@@ -844,7 +844,7 @@ pub fn math_round(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 }
 
 pub fn math_absolute(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
-    let num = match value_to_f64(&args[0].clone()) {
+    let num = match value_to_f64(&args[0]) {
         Some(num_val) => num_val,
         None => panic!("Expected a valid number value for math.absolute")
     };
@@ -868,17 +868,14 @@ pub fn math_pi(_vm: &mut VirtualMachine, _s_arg: Value) -> Value {
 
 /// Not to be confused with pi, this returns the golden ratio
 pub fn math_phi(_vm: &mut VirtualMachine, _s_arg: Value) -> Value {
-    // The self argument here is useless
     Value::Float(std::f64::consts::GOLDEN_RATIO)
 }
 
 pub fn math_eul(_vm: &mut VirtualMachine, _s_arg: Value) -> Value {
-    // The self argument here is useless
     Value::Float(std::f64::consts::E)
 }
 
 pub fn math_root2(_vm: &mut VirtualMachine, _s_arg: Value) -> Value {
-    // The self argument here is useless
     Value::Float(std::f64::consts::SQRT_2)
 }
 
