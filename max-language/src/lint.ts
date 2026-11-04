@@ -158,7 +158,7 @@ export function toLetter(str: string): string {
     return "x";
 }
 
-export function registerLint(context: vscode.ExtensionContext) {
+export function registerLint(_context: vscode.ExtensionContext) {
     // Create a diagnostics bucket. This is for error linting
     const diagnostics = vscode.languages.createDiagnosticCollection("max");
 
@@ -181,9 +181,16 @@ export function registerLint(context: vscode.ExtensionContext) {
         mutabilityModifier: MutabilityModifier | undefined;
     }
 
+    enum ParamKind {
+        required,
+        optional,
+        variadic
+    }
+
     interface TaskParam {
         name: string,
-        type: string | null
+        type: string | null,
+        paramKind: ParamKind
     }
     
     interface BlockComment {
@@ -348,13 +355,16 @@ export function registerLint(context: vscode.ExtensionContext) {
                 const trimmed = rawParam.trim();
                 if (!trimmed) continue;
 
+                const paramStartPos = document.positionAt(paramsStartPos + paramText.indexOf(rawParam));
+                const paramEndPos = document.positionAt(paramsStartPos + paramText.indexOf(rawParam) + rawParam.length);
+
                 // A flexible regex: requires name, 'as', and a type name optionally
-                const paramMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+                const paramMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)(\?|\.\.\.)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
 
                 if (!paramMatch) {
                     // Report syntax error for malformed parameter structure
                     diags.push(new vscode.Diagnostic(
-                        new vscode.Range(startPos, endPos), // adjust position as needed
+                        new vscode.Range(paramStartPos, paramEndPos),
                         `Invalid parameter syntax: "${trimmed}". Expected format: 'name' or 'name as type'`,
                         vscode.DiagnosticSeverity.Error
                     ));
@@ -362,7 +372,58 @@ export function registerLint(context: vscode.ExtensionContext) {
                 }
 
                 const paramName = paramMatch[1];
-                const typeName = paramMatch[2] || null; // Will be null if omitted
+                const special = paramMatch[2] ?? "";
+                const typeName = paramMatch[3] || null; // Will be null if omitted
+
+                // Check what kind of param kind it is via matching
+                let paramKind: ParamKind = ParamKind.required;
+                switch (special.trim()) {
+                    case "": paramKind = ParamKind.required; break;
+                    case "?": paramKind = ParamKind.optional; break;
+                    case "...": paramKind = ParamKind.variadic; break;
+                    default: {
+                        diags.push(new vscode.Diagnostic(
+                            new vscode.Range(paramStartPos, paramEndPos),
+                            `Invalid special characters after param name: '${special}'.\nMust be empty, '?' or '...'
+                            `,
+                            vscode.DiagnosticSeverity.Error
+                        ));
+                    }
+                }
+
+                // Depending on the given kind, now we further evaluate
+                switch (paramKind) {
+                    case ParamKind.required: {
+                        let found: TaskParam | undefined = undefined;
+
+                        // Also set 'found' to the param for reference in the error
+                        if (parameters.some(v => { found = v; return v.paramKind == ParamKind.optional })) {
+                            diags.push(new vscode.Diagnostic(
+                                new vscode.Range(paramStartPos, paramEndPos),
+                                `Cannot put required parameter '${paramName}' after optional parameter '${found!.name}'`,
+                                vscode.DiagnosticSeverity.Error
+                            ));
+                        }
+
+                        break;
+                    };
+
+                    case ParamKind.variadic: {
+                        // Essentially if it is not the last one
+                        if (rawParams.indexOf(rawParam) !== rawParams.length - 1) {
+                            diags.push(new vscode.Diagnostic(
+                                new vscode.Range(paramStartPos, paramEndPos),
+                                `Variadic param '${paramName}' must be the last parameter`,
+                                vscode.DiagnosticSeverity.Error
+                            ));
+                        }
+
+                        break;
+                    }
+                    
+                    // Not many limits to optional params
+                    default: break;
+                }
 
                 // Finally, validate the type
                 if (typeName !== null && !types.includes(typeName)) {
@@ -373,7 +434,16 @@ export function registerLint(context: vscode.ExtensionContext) {
                     ));
                 }
 
-                parameters.push({ name: paramName, type: typeName });
+                parameters.push({ name: paramName, type: typeName, paramKind });
+            }
+
+            // Only one may survive...
+            if (parameters.filter(v => v.paramKind == ParamKind.variadic).length > 1) {
+                diags.push(new vscode.Diagnostic(
+                    new vscode.Range(startPos, endPos),
+                    "Can only have one variadic parameter",
+                    vscode.DiagnosticSeverity.Error
+                ));
             }
 
             return parameters;
