@@ -962,6 +962,28 @@ impl Parser {
         Ok((cases, else_case))
     }
 
+    /// Validates the order of a given Vector of `Parameter`.
+    /// `Parameter::Optional` must always be after required params,
+    /// and `Parameter::Variadic` must always be the last param, with only one existing
+    fn validate_parameter_order(params: &Vec<Parameter>) {
+        let mut seen_optional: bool = false;
+
+        for i in 0..params.len() {
+            match &params[i].kind {
+                ParameterKind::Required => if seen_optional {
+                    panic!("Required parameter '{}' cannot follow an optional parameter", &params[i].name);
+                }
+
+                ParameterKind::Optional => seen_optional = true,
+
+                // If it is not the last param
+                ParameterKind::Variadic => if i != params.len() - 1 {
+                    panic!("Variadic parameter '{}' must be the last parameter", &params[i].name);
+                }
+            }
+        }
+    }
+
     /// Parses parameters, this always begins by expecting a left parenthesis
     fn parse_parameters(&mut self) -> Result<Vec<Parameter>, MaxError> {
         self.expect(K::LeftParenthesis)?;
@@ -974,10 +996,20 @@ impl Parser {
         loop {
             let token = self.expect(K::Identifier)?;
             let name = token.value;
+            let mut kind: ParameterKind = ParameterKind::Required;
+
+            // Symbols to differentiate param types
+            if self.eat(K::QuestionMark) {
+                kind = ParameterKind::Optional
+            }
+            else if self.eat(K::Ellipsis) {
+                kind = ParameterKind::Variadic
+            }
+
             // Allow 'as' for type specification
             let type_ref = if self.eat(K::As) { Some(self.parse_span_type()?) } else { None };
 
-            parameters.push(Parameter { type_ref, name });
+            parameters.push(Parameter { type_ref, name, kind });
 
             if !self.eat(K::Comma) {
                 break;
@@ -985,11 +1017,28 @@ impl Parser {
         }
         self.expect(K::RightParenthesis)?;
 
+        Self::validate_parameter_order(&parameters);
+
         Ok(parameters)
     }
 
     fn parse_definition(&mut self) -> Result<TaskDefinition, MaxError> {
         self.expect(K::Define)?;
+
+        let mut is_native = false;
+
+        // A sneak peek!
+        if self.check(K::Identifier) {
+            // `native` is only special straight after `define`
+            let native_word = self.consume()?;
+            if native_word.value != "native" {
+                return Err(Self::error_at(&native_word, "Identifier after 'define' can only be 'native'"));
+            }
+            else {
+                // 'native' was found, so now it is true!
+                is_native = true;
+            }
+        }
 
         let kind_token = self.expect(K::TaskType)?;
         let kind = match kind_token.value.as_str() {
@@ -1019,11 +1068,30 @@ impl Parser {
 
         let return_type = if self.eat(K::Return) { Some(self.parse_span_type()?) } else { None };
 
+        if self.eat(K::Semicolon) {
+            if !is_native {
+                return Err(self.error_here("Cannot use a semicolon to show an empty body for a none-native task"));
+            }
+            else {
+                return Ok(TaskDefinition { kind, name, is_native, parameters, return_type, body: vec![], name_span });
+            }
+        }
+
         self.expect(K::Do)?;
         let body = self.parse_block(&[K::ConcludeStatement])?;
         self.expect(K::ConcludeStatement)?;
 
-        Ok(TaskDefinition { kind, name, parameters, return_type, body, name_span })
+        // Native checks!
+        if is_native {
+            if kind == TaskKind::Coroutine {
+                return Err(Self::error_at(&kind_token, "A coroutine cannot be native"));
+            }
+            if !body.is_empty() {
+                return Err(Self::error_at(&kind_token, "A native definition must have an empty body"));
+            }
+        }
+
+        Ok(TaskDefinition { kind, name, is_native, parameters, return_type, body, name_span })
     }
 
     fn parse_enum(&mut self) -> Result<EnumDefinition, MaxError> {

@@ -162,10 +162,19 @@ pub struct ModifierSet {
     pub mutability: Option<Mutability>,
 }
 
+/// Seperate from lib.rs, requires no struct
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParameterKind {
+    Required,
+    Optional,
+    Variadic
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     pub type_ref: Option<Spanned<TypeRef>>,
     pub name: String,
+    pub kind: ParameterKind
 }
 
 /// An enum member as parsed. The compiler adds the enum name and path when it builds the bytecode.
@@ -254,6 +263,7 @@ pub struct MatchStatement {
 pub struct TaskDefinition {
     pub kind: TaskKind,
     pub name: String,
+    pub is_native: bool,
     pub parameters: Vec<Parameter>,
     pub return_type: Option<Spanned<TypeRef>>,
     pub body: Vec<Statement>,

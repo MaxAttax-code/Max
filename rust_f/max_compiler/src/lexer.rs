@@ -317,8 +317,21 @@ impl Lexer {
             ',' => (K::Comma, ","),
             ':' => (K::Colon, ":"),
             ';' => (K::Semicolon, ";"),
-            '.' => (K::Dot, "."),
+            '.' => {
+                // Quite clearly matching an ellipsis
+                if self.matches("..") {
+                    for _ in 0..2 {
+                        // Twice to skip the following '..'
+                        self.advance();
+                    }
+                    (K::Ellipsis, "...")
+                }
+                else {
+                    (K::Dot, ".")
+                }
+            },
             '$' => (K::Dollar, "$"),
+            '?' => (K::QuestionMark, "?"),
 
             _ => {
                 return Err(MaxError::Syntax {
