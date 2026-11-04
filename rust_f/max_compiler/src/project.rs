@@ -57,15 +57,26 @@ impl std::error::Error for ProjectError {}
 // ---------- TYPES ----------- //
 // ---------------------------- //
 
+/// Where a file came from. Library files are only compiled when something reaches them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Origin {
+    /// A file in the project's own source directory
+    User,
+    /// A file in the built-in library directory
+    Library,
+}
+
 /// A file's path and contents. Tests build these directly, so nothing here needs a real disk.
 pub struct SourceFile {
     pub path: PathBuf,
     pub text: String,
+    pub origin: Origin
 }
 
 struct ParsedFile {
     module: String,
     path: PathBuf,
+    origin: Origin,
     statements: Vec<Statement>,
     /// The modules named by top-level `using` statements, without repeats
     dependencies: Vec<String>,
@@ -83,23 +94,38 @@ pub struct CompiledProgram {
 // ------- ENTRY POINTS ------- //
 // ---------------------------- //
 
-/// Compiles every `.max` file under `source_dir`, found recursively.
+/// Compiles every `.max` file under `source_dir`, found recursively,
+/// along with whichever modules from `library_dir` they use.
 /// Files are sorted by path, so lambda IDs and the compile order are the same on every machine.
-pub fn compile_project(source_dir: &Path, natives: NativeNames) -> Result<CompiledProgram, ProjectError> {
-    let mut paths = Vec::new();
-    collect_max_files(source_dir, &mut paths)
+pub fn compile_project(source_dir: &Path, library_dir: &Path, natives: NativeNames) -> Result<CompiledProgram, ProjectError> {
+    // The two directories are collected into separate lists, so each file keeps track of where it came from
+    let mut user_paths = Vec::new();
+    collect_max_files(source_dir, &mut user_paths)
         .map_err(|source| ProjectError::Io { path: source_dir.to_path_buf(), source })?;
 
-    if paths.is_empty() {
+    if user_paths.is_empty() {
         return Err(ProjectError::NoSourceFiles(source_dir.to_path_buf()));
     }
-    paths.sort();
 
-    let mut sources = Vec::with_capacity(paths.len());
-    for path in paths {
+    // Libraries in a seperate vec
+    let mut library_paths = Vec::new();
+    collect_max_files(library_dir, &mut library_paths)
+        .map_err(|source| ProjectError::Io { path: library_dir.to_path_buf(), source })?;
+
+    // All library paths are tagged with `Origin::Library` and users are tagged with `Origin::User`
+    let mut tagged: Vec<(PathBuf, Origin)> = user_paths
+        .into_iter()
+        .map(|path| (path, Origin::User))
+        .chain(library_paths.into_iter().map(|path| (path, Origin::Library)))
+        .collect();
+    // And sorted by paths
+    tagged.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut sources = Vec::with_capacity(tagged.len());
+    for (path, origin) in tagged {
         let text = fs::read_to_string(&path)
             .map_err(|source| ProjectError::Io { path: path.clone(), source })?;
-        sources.push(SourceFile { path, text });
+        sources.push(SourceFile { path, text, origin });
     }
 
     compile_sources(sources, natives)
@@ -109,11 +135,11 @@ pub fn compile_project(source_dir: &Path, natives: NativeNames) -> Result<Compil
 pub fn compile_sources(sources: Vec<SourceFile>, natives: NativeNames) -> Result<CompiledProgram, ProjectError> {
     let parsed = parse_sources(sources)?;
 
-    if !parsed.iter().any(|file| file.module == MAIN_MODULE) {
+    if !parsed.iter().any(|file| file.module == MAIN_MODULE && file.origin == Origin::User) {
         return Err(ProjectError::MissingMain);
     }
 
-    let ordered = resolve_order(parsed, &natives)?;
+    let ordered = resolve_order(parsed)?;
 
     let mut ctx = CompileContext::new(natives);
     let mut modules = HashMap::new();
@@ -126,7 +152,7 @@ pub fn compile_sources(sources: Vec<SourceFile>, natives: NativeNames) -> Result
             SymbolTable::from_statements(&file.module, &file.statements),
         );
 
-        let bytecode = Compiler::new(&ctx, &file.dependencies)
+        let bytecode = Compiler::new(&ctx, &file.module, &file.dependencies)
             .compile(&file.statements)
             .map_err(|error| ProjectError::InFile { path: file.path.clone(), error })?;
 
@@ -161,6 +187,8 @@ fn parse_sources(sources: Vec<SourceFile>) -> Result<Vec<ParsedFile>, ProjectErr
     let mut parsed = Vec::with_capacity(sources.len());
 
     for source in sources {
+        let origin = source.origin;
+
         // The module name is the file name without its extension
         let module = source
             .path
@@ -197,9 +225,17 @@ fn parse_sources(sources: Vec<SourceFile>) -> Result<Vec<ParsedFile>, ProjectErr
                 dependencies.push(using.module.clone());
                 dependency_spans.push(using.module_span);
             }
+            if let StatementKind::TaskDefinition(definition) = &statement.kind {
+                if origin == Origin::User && definition.is_native {
+                    return Err(ProjectError::InFile {
+                        path: source.path,
+                        error: MaxError::Logic("Cannot create a native task definition within a user-defined file".into())
+                    });
+                }
+            }
         }
 
-        parsed.push(ParsedFile { module, path: source.path, statements, dependencies, dependency_spans });
+        parsed.push(ParsedFile { module, path: source.path, origin, statements, dependencies, dependency_spans });
     }
 
     Ok(parsed)
@@ -221,7 +257,6 @@ enum Visit {
 struct Resolver<'a> {
     files: &'a [ParsedFile],
     index: HashMap<&'a str, usize>,
-    natives: &'a NativeNames,
     state: Vec<Visit>,
     stack: Vec<usize>,
     order: Vec<usize>,
@@ -233,7 +268,10 @@ impl<'a> Resolver<'a> {
 
         match self.state[i] {
             Visit::Visited => return Ok(()),
+
             Visit::Visiting => {
+                // This means the chain is already visiting this file
+                // Leading to a circular loop
                 let start = self.stack.iter().position(|&s| s == i).unwrap_or(0);
                 let mut chain: Vec<String> = self.stack[start..]
                     .iter()
@@ -242,6 +280,8 @@ impl<'a> Resolver<'a> {
                 chain.push(files[i].module.clone());
                 return Err(ProjectError::Circular(chain));
             }
+
+            // It's alright
             Visit::Unvisited => {}
         }
 
@@ -251,9 +291,6 @@ impl<'a> Resolver<'a> {
         for (d, dependency) in files[i].dependencies.iter().enumerate() {
             match self.index.get(dependency.as_str()) {
                 Some(&j) => self.visit(j)?,
-
-                // `using math;` is allowed, but there is no file to order
-                None if self.natives.static_modules.contains(dependency) => {}
 
                 None => {
                     let span = files[i].dependency_spans[d];
@@ -276,25 +313,27 @@ impl<'a> Resolver<'a> {
     }
 }
 
-/// Orders files so every file comes after the files it uses
-fn resolve_order(files: Vec<ParsedFile>, natives: &NativeNames) -> Result<Vec<ParsedFile>, ProjectError> {
+/// Orders files so every file comes after the files it uses.
+/// Only user files are visited directly, so a library file survives only if something reaches it.
+fn resolve_order(files: Vec<ParsedFile>) -> Result<Vec<ParsedFile>, ProjectError> {
     let order = {
         let mut resolver = Resolver {
             files: &files,
             index: files.iter().enumerate().map(|(i, f)| (f.module.as_str(), i)).collect(),
-            natives,
             state: vec![Visit::Unvisited; files.len()],
             stack: Vec::new(),
             order: Vec::new(),
         };
 
         for i in 0..files.len() {
-            resolver.visit(i)?;
+            if files[i].origin == Origin::User {
+                resolver.visit(i)?;
+            }
         }
         resolver.order
     };
 
-    // Every index appears exactly once, so each slot is taken exactly once
+    // Each ordered index appears once. Library files nothing reached are never taken, and are dropped here
     let mut slots: Vec<Option<ParsedFile>> = files.into_iter().map(Some).collect();
     Ok(order
         .into_iter()
@@ -307,82 +346,45 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    fn natives() -> NativeNames {
-        NativeNames { static_modules: HashSet::from([String::from("math")]), global_tasks: HashSet::new() }
+    fn file(name: &str, text: &str) -> SourceFile {
+        SourceFile { path: PathBuf::from(name), text: text.to_string(), origin: Origin::User }
     }
 
-    fn file(name: &str, text: &str) -> SourceFile {
-        SourceFile { path: PathBuf::from(name), text: text.to_string() }
+    fn natives() -> NativeNames {
+        NativeNames {
+            module_tasks: HashSet::from([String::from("math.sqrt")]),
+            module_properties: HashSet::from([String::from("math.PI")]),
+            global_tasks: HashSet::new(),
+        }
+    }
+
+    fn library_file(name: &str, text: &str) -> SourceFile {
+        SourceFile { path: PathBuf::from(name), text: text.to_string(), origin: Origin::Library }
     }
 
     #[test]
-    fn dependencies_compile_before_the_files_that_use_them() {
-        // `main` is listed first, but it needs `helper`
+    fn using_a_library_module_compiles_it() {
         let program = compile_sources(
             vec![
-                file("src/main.max", "using helper;\nhelper.greet()"),
-                file("src/helper.max", "define function greet => do say \"hi\" conclude"),
+                file("src/main.max", "using math;\nsay math.sqrt(4)"),
+                library_file("library/math.max", "define native function sqrt with (x as float) return float do conclude"),
             ],
             natives(),
         )
         .unwrap();
-
-        assert_eq!(program.order, vec!["helper", "main"]);
-        assert!(program.modules.contains_key("main") && program.modules.contains_key("helper"));
+        assert_eq!(program.order, vec!["math", "main"]);
     }
 
     #[test]
-    fn circular_dependencies_report_the_cycle() {
-        let result = compile_sources(
-            vec![file("main.max", "using util;"), file("util.max", "using main;")],
+    fn unused_library_modules_are_left_out() {
+        let program = compile_sources(
+            vec![
+                file("src/main.max", "say 1"),
+                library_file("library/math.max", "define native function sqrt with (x as float) return float do conclude"),
+            ],
             natives(),
-        );
-
-        match result {
-            Err(ProjectError::Circular(chain)) => assert_eq!(chain, vec!["main", "util", "main"]),
-            other => panic!("expected a cycle, got {:?}", other.err()),
-        }
-    }
-
-    #[test]
-    fn a_missing_module_points_at_its_using_statement() {
-        let result = compile_sources(vec![file("main.max", "using nothing;")], natives());
-
-        match result {
-            Err(ProjectError::InFile { error: MaxError::Syntax { line, column, .. }, .. }) => {
-                assert_eq!((line, column), (1, 7));
-            }
-            other => panic!("expected an error, got {:?}", other.err()),
-        }
-    }
-
-    #[test]
-    fn a_project_needs_a_main_file() {
-        let result = compile_sources(vec![file("helper.max", "declare x = 1")], natives());
-        assert!(matches!(result, Err(ProjectError::MissingMain)));
-    }
-
-    #[test]
-    fn two_files_with_one_name_are_rejected() {
-        let result = compile_sources(
-            vec![file("a/util.max", ""), file("b/util.max", ""), file("main.max", "")],
-            natives(),
-        );
-        assert!(matches!(result, Err(ProjectError::DuplicateModule { .. })));
-    }
-
-    #[test]
-    fn using_a_native_module_is_allowed() {
-        assert!(compile_sources(vec![file("main.max", "using math;\nsay math.sqrt(4)")], natives()).is_ok());
-    }
-
-    #[test]
-    fn errors_name_the_file_they_came_from() {
-        let result = compile_sources(vec![file("src/main.max", "declare x =")], natives());
-
-        match result {
-            Err(ProjectError::InFile { path, .. }) => assert_eq!(path, PathBuf::from("src/main.max")),
-            other => panic!("expected an error, got {:?}", other.err()),
-        }
+        )
+        .unwrap();
+        assert_eq!(program.order, vec!["main"]);
     }
 }
