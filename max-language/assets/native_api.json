@@ -29,76 +29,76 @@
       "detail": "Gives 1 divided by the number"
     },
     {
-        "label": "cos(angle)",
-        "detail": "Gives the cosine value of an angle"
+      "label": "cos(angle)",
+      "detail": "Gives the cosine value of an angle"
     },
     {
-        "label": "sin(angle)",
-        "detail": "Gives the sine value of an angle"
+      "label": "sin(angle)",
+      "detail": "Gives the sine value of an angle"
     },
     {
-        "label": "tan(angle)",
-        "detail": "Gives the tangent value of an angle"
+      "label": "tan(angle)",
+      "detail": "Gives the tangent value of an angle"
     },
     {
-        "label": "sec(angle)",
-        "detail": "Gives for an angle 1 / cosine(angle)"
+      "label": "sec(angle)",
+      "detail": "Gives for an angle 1 / cosine(angle)"
     },
     {
-        "label": "cosec(angle)",
-        "detail": "Gives for an angle 1 / sine(angle)"
+      "label": "cosec(angle)",
+      "detail": "Gives for an angle 1 / sine(angle)"
     },
     {
-        "label": "cotan(angle)",
-        "detail": "Gives for an angle 1 / tan(angle)"
+      "label": "cotan(angle)",
+      "detail": "Gives for an angle 1 / tan(angle)"
     },
     {
-        "label": "iCos(number)",
-        "detail": "Gives the inverse cosine value of a number between -1 and 1"
+      "label": "iCos(number)",
+      "detail": "Gives the inverse cosine value of a number between -1 and 1"
     },
     {
-        "label": "iSin(number)",
-        "detail": "Gives the inverse sin value of a number between -1 and 1"
+      "label": "iSin(number)",
+      "detail": "Gives the inverse sin value of a number between -1 and 1"
     },
     {
-        "label": "iTan(number)",
-        "detail": "Gives the inverse tan value of a number"
+      "label": "iTan(number)",
+      "detail": "Gives the inverse tan value of a number"
     },
     {
-        "label": "iSec(number)",
-        "detail": "Gives the inverse sec value of a number out of the range between -1 and 1"
+      "label": "iSec(number)",
+      "detail": "Gives the inverse sec value of a number out of the range between -1 and 1"
     },
     {
-        "label": "iCosec(number)",
-        "detail": "Gives the inverse cosec value of a number out of the range between -1 and 1"
+      "label": "iCosec(number)",
+      "detail": "Gives the inverse cosec value of a number out of the range between -1 and 1"
     },
     {
-        "label": "iCotan(number)",
-        "detail": "Gives the inverse cotan value of a number"
+      "label": "iCotan(number)",
+      "detail": "Gives the inverse cotan value of a number"
     },
     {
-        "label": "cosh(angle)",
-        "detail": "Gives the hyperbolic cos value of an angle"
+      "label": "cosh(angle)",
+      "detail": "Gives the hyperbolic cos value of an angle"
     },
     {
-        "label": "sinh(angle)",
-        "detail": "Gives the hyperbolic sin value of an angle"
+      "label": "sinh(angle)",
+      "detail": "Gives the hyperbolic sin value of an angle"
     },
     {
-        "label": "tanh(angle)",
-        "detail": "Gives the hyperbolic tan value of an angle"
+      "label": "tanh(angle)",
+      "detail": "Gives the hyperbolic tan value of an angle"
     },
     {
-        "label": "iCosh(number)",
-        "detail": "Gives the inverse cosh value of a number above or equal to 1"
+      "label": "iCosh(number)",
+      "detail": "Gives the inverse cosh value of a number above or equal to 1"
     },
     {
-        "label": "iSinh(number)",
-        "detail": "Gives the inverse sinh value of a number"
+      "label": "iSinh(number)",
+      "detail": "Gives the inverse sinh value of a number"
     },
     {
-        "label": "iTanh(number)",
-        "detail": "Gives the inverse tanh value of a number between -1 and 1"
+      "label": "iTanh(number)",
+      "detail": "Gives the inverse tanh value of a number between -1 and 1"
     },
     {
       "label": "abs(number)",
@@ -146,21 +146,123 @@
 
   "iterables": [
     {
-        "label": "countChars(str)",
-        "detail": "Returns a dictionary of characters and the number of appearances in the string"
+      "label": "countChars(str)",
+      "detail": "Returns a dictionary of characters and the number of appearances in the string"
     },
     {
-        "label": "countExistingChars(str)",
-        "detail": "Returns a dictionary of characters that appeared in the string and the number of appearances in the string"
+      "label": "countExistingChars(str)",
+      "detail": "Returns a dictionary of characters that appeared in the string and the number of appearances in the string"
     },
     {
-        "label": "toDictionary(keysList, valuesList)",
-        "detail": "Intakes a keys list, and a values list, and creates a dictionary out of the two"
+      "label": "toDictionary(keysList, valuesList)",
+      "detail": "Intakes a keys list, and a values list, and creates a dictionary out of the two"
+    },
+    {
+      "label": "mode(iterable)",
+      "detail": "Finds the most occuring element(s) within a list or value(s) within a dictionary"
+    },
+    {
+      "label": "middleValue(list)",
+      "detail": "Gets the middle value (the median of a dataset) from a list. If the list has an even number of elements, this gets the element above the middle point"
+    },
+    {
+      "label": "range(numList)",
+      "detail": "Gets the range of a number list"
+    },
+    {
+      "label": "inCommon(list1, list2)",
+      "detail": "Returns a list of the common elements between two lists. Empty if no common elements found"
+    },
+    {
+      "label": "flatten(nested)",
+      "detail": "Flattens a list recursively, debracketing any nested lists within and inputting their elements into the list. The result of this will always be a list without any nesting"
+    },
+    {
+      "label": "permutations(list, r)",
+      "detail": "Returns the number of permutations possible within the list, identicals included, able to choose r amount of items that is otherwise 2"
+    },
+    {
+      "label": "combinations(list, r)",
+      "detail": "Returns the number of combinations possible within the list, identicals included, able to choose r amount of items that is otherwise 2"
     },
     
     {
       "label": "alphabet",
       "detail": "A list of the lowercase alphabet. In order of a-z",
+      "kind": 20
+    }
+  ],
+
+  "datetime": [
+    {
+        "label": "isLeapYear(year)",
+        "detail": "Returns if the given year is a leap year in the Gregorian Calendar"
+    },
+    {
+        "label": "timeSince(seconds)",
+        "detail": "Calculates the time passed between the given timeframe and the current time, via the UNIX-EPOCH standard time for all computers"
+    },
+    {
+        "label": "formatDate(seconds)",
+        "detail": "Formats the given seconds timeframe into Year-Month-Day. Use this with datetime.currentUTC"
+    },
+    
+    {
+      "label": "currentUTC",
+      "detail": "The current UTC time in seconds. This is not constant throughout the code, getting this property at different parts of the code can give different values",
+      "kind": 20
+    },
+    {
+      "label": "currentStringUTC",
+      "detail": "Gives the current UTC time in the format hours:minutes:seconds. This is calculated from the UNIX-EPOCH to the current UTC time",
+      "kind": 20
+    }
+  ],
+
+  "random": [
+    {
+      "label": "randInt()",
+      "detail": "Outputs a random integer, with a minimum and maximum range"
+    },
+    {
+      "label": "random()",
+      "detail": "Outputs a random float, with a minimum and maximum range"
+    },
+    {
+      "label": "shuffle(list)",
+      "detail": "Returns the given list shuffled around"
+    },
+    {
+      "label": "shuffleNow(list)",
+      "detail": "Shuffles the given list in-place"
+    },
+    {
+      "label": "weightedChoice(list, weights...)",
+      "detail": "Intakes a list, and integer values representing weights for the corresponding list value, returning a weighted picked result"
+    },
+    {
+      "label": "seed()",
+      "detail": "Seeds the randomness with a given non-negative integer. This seed persists through all files that use random once it is set"
+    },
+    
+    {
+      "label": "minInt",
+      "detail": "The minimum integer possible. This can be used for random ranges",
+      "kind": 20
+    },
+    {
+      "label": "maxInt",
+      "detail": "The maximum integer possible. This can be used for random ranges",
+      "kind": 20
+    },
+    {
+      "label": "minFloat",
+      "detail": "The minimum float possible. This can be used for random ranges",
+      "kind": 20
+    },
+    {
+      "label": "maxFloat",
+      "detail": "The maximum float possible. This can be used for random ranges",
       "kind": 20
     }
   ]
