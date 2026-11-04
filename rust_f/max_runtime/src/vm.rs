@@ -243,19 +243,19 @@ impl Value {
         }
     }
 
-    /// Decides if a value is truthy or not
-    pub fn truthiness(&self) -> Option<bool> {
+    /// Reads a boolean-like value. Some(bool) when decided, None while a possible is unresolved.
+    /// Anything that isn't a boolean or possible is an error.
+    pub fn boolean_state(&self) -> Option<bool> {
         match self {
             Value::Boolean(b) => Some(*b),
-            Value::Nil => Some(false),
             Value::Possible(p) => p.borrow().current,
-            _ => Some(true),
+            other => panic!("Expected a boolean or possible, got '{}'", other),
         }
     }
 
     /// Performs the logic AND gate on two values
     pub fn logical_and(left: &Value, right: &Value) -> Value {
-        match (left.truthiness(), right.truthiness()) {
+        match (left.boolean_state(), right.boolean_state()) {
             (Some(false), _) | (_, Some(false)) => Value::Boolean(false),
             (Some(true), Some(true)) => Value::Boolean(true),
             _ => Value::new_possible(),
@@ -264,7 +264,7 @@ impl Value {
 
     /// Performs the logic OR gate on two valuess
     pub fn logical_or(left: &Value, right: &Value) -> Value {
-        match (left.truthiness(), right.truthiness()) {
+        match (left.boolean_state(), right.boolean_state()) {
             (Some(true), _) | (_, Some(true)) => Value::Boolean(true),
             (Some(false), Some(false)) => Value::Boolean(false),
             _ => Value::new_possible(),
@@ -1361,7 +1361,7 @@ impl VirtualMachine {
                     let val = self.stack.pop().unwrap_or(Value::Nil);
                     
                     // Simply inverse value depending on what value was given
-                    self.stack.push(match val.truthiness() {
+                    self.stack.push(match val.boolean_state() {
                         Some(truth) => Value::Boolean(!truth),
                         None => Value::new_possible(),
                     });
@@ -1543,6 +1543,74 @@ impl VirtualMachine {
                     self.stack.push(result);
                 }
 
+                /*
+                    This is different from CallNative as it allows the native module type function definitions.
+                    This is needed as module tasks call upon Rust fns for the actual back-end work.
+                    As a result, we need to specify how optional and variadic params work, so this is it!
+                */
+                Op::CallNativeForward(call) => {
+                    // The wrapper's own frame knows what the declared parameters are
+                    let parameters = self.call_stack.last()
+                        // Get the task info
+                        .and_then(|frame| frame.task_info.as_ref())
+                        // Map into params
+                        .map(|task| task.parameters.clone())
+                        // Msg for error
+                        .expect("CallNativeForward can only run inside a native task wrapper");
+
+                    // (value, came from an optional parameter?)
+                    let mut forwarded: Vec<(Value, bool)> = Vec::new();
+
+                    for parameter in &parameters {
+                        // As simple as PI
+                        let value = self.lookup_variable(&parameter.name)
+                            .map(|entry| entry.value.borrow().clone())
+                            .unwrap_or_else(|| panic!("Native wrapper parameter '{}' is not defined", parameter.name));
+
+                        match &parameter.parameter_kind {
+                            ParamKind::Required(_) => forwarded.push((value, false)),
+                            ParamKind::Optional(_) => forwarded.push((value, true)),
+
+                            // Spread the list back out into individual arguments
+                            ParamKind::Variadic(_) => {
+                                let Value::List(list) = value else {
+                                    panic!("Variadic parameter '{}' should hold a list", parameter.name);
+                                };
+
+                                for item in list.borrow().items.iter() {
+                                    // Variadics aren't 'optional', they are in fact variadic
+                                    // If you want: `https://en.wikipedia.org/wiki/Variadic_function``
+                                    forwarded.push((item.clone(), false));
+                                }
+                            }
+                        }
+                    }
+
+                    // Trailing optionals that are nil were omitted. That way the native is lied to
+                    // and thinks "yeah. don't see any optionals here!"
+                    while matches!(forwarded.last(), Some((Value::Nil, true))) {
+                        forwarded.pop();
+                    }
+
+                    // Otherwise we just as normal get the forwarded call
+                    let mut forwarded_call = call.clone();
+                    forwarded_call.argument_count = forwarded.len() as u64;
+
+                    // Push vals...
+                    for (value, _) in forwarded {
+                        self.stack.push(value);
+                    }
+
+                    let mut control_transferred = false;
+                    // All back to call native!
+                    let result = self.invoke_native(&forwarded_call, &mut ip, &mut active_instructions, &mut control_transferred);
+
+                    if control_transferred {
+                        continue;
+                    }
+                    self.stack.push(result);
+                }
+
 
                 /*
                  -------------------
@@ -1559,7 +1627,7 @@ impl VirtualMachine {
                 // This checks for the condition before it to check if it can jump or not
                 Op::JumpIfFalse(jump_to) => {
                     let condition = self.stack.pop().unwrap_or(Value::Nil);
-                    if condition.truthiness() == Some(false) {
+                    if condition.boolean_state() == Some(false) {
                         ip = *jump_to;
                         continue;
                     }
@@ -2614,15 +2682,6 @@ impl VirtualMachine {
         ip: &mut usize,
         active_instructions: &mut Arc<Vec<Op>>,
     ) {
-        if argument_count != task.parameters.len() as u64 {
-            panic!(
-                "Task '{}' expects {} arguments, but {} were provided",
-                task.parameters.len(),
-                task.parameters.len(),
-                argument_count
-            );
-        }
-
         // Pop arguments from stack
         let mut arguments: Vec<Value> = Vec::with_capacity(argument_count as usize);
         for _ in 0..argument_count {
@@ -2633,19 +2692,61 @@ impl VirtualMachine {
 
         arguments.reverse();
 
+        let mut kinds: Vec<ParamKind> = Vec::new();
+        for param in task.parameters.iter() {
+            kinds.push(param.parameter_kind.clone());
+        }
+
+        // Validates arity
+        match ParamKind::validate_arity(&kinds, arguments.len()) {
+            Ok(()) => {},
+            Err(s) => panic!("{}", s)
+        };
+
         // Build parameters scope
         let mut call_scope: HashMap<String, VariableEntry> = HashMap::new();
-        for index in 0..task.parameters.len() {
-            let parameter = &task.parameters[index];
-            let argument = &arguments[index];
+        // into_iter() -> .next() -> Optionals allowed!
+        let mut supplied = arguments.into_iter();
 
-            if let Some(ensurable) = &parameter.max_type {
-                Self::ensure_compatibility(ensurable, argument);
-            }
+        for parameter in &task.parameters {
+            let value = match &parameter.parameter_kind {
+                ParamKind::Required(typing) => {
+                    let argument = supplied.next().expect("arity was validated");
+                    if let Some(ensurable) = typing {
+                        Self::ensure_compatibility(ensurable, &argument);
+                    }
+                    argument
+                }
+
+                ParamKind::Optional(typing) => match supplied.next() {
+                    Some(argument) => {
+                        if let Some(ensurable) = typing {
+                            Self::ensure_compatibility(ensurable, &argument);
+                        }
+                        argument
+                    }
+                    // Not supplied: the parameter still exists, it's just nil
+                    None => Value::Nil,
+                },
+
+                ParamKind::Variadic(typing) => {
+                    // Everything left over belongs to the variadic
+                    let rest: Vec<Value> = supplied.by_ref().collect();
+
+                    if let Some(ensurable) = typing {
+                        for item in &rest {
+                            Self::ensure_compatibility(ensurable, item);
+                        }
+                    }
+
+                    // Zero extra arguments gives an empty list
+                    Value::new_list(typing.clone(), rest)
+                }
+            };
 
             call_scope.insert(
                 parameter.name.clone(),
-                VariableEntry::new(argument.clone(), Modifiers::e_new(), None, None),
+                VariableEntry::new(value, Modifiers::e_new(), None, None),
             );
         }
 
