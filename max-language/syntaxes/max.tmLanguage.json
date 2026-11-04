@@ -27,31 +27,7 @@
             "include": "#properties"
         },
         {
-            "include": "#types"
-        },
-        {
-            "include": "#booleans"
-        },
-        {
-            "include": "#numbers"
-        },
-        {
-            "include": "#strings"
-        },
-        {
-            "include": "#comparisons"
-        },
-        {
-            "include": "#arithmetic"
-        },
-        {
-            "include": "#parentheses"
-        },
-        {
-            "include": "#brackets"
-        },
-        {
-            "include": "#identifiers"
+            "include": "#constant"
         }
     ],
 
@@ -98,7 +74,8 @@
                 {
                     "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*(?:as\\b|=))",
                     "name": "variable.other.max"
-                }
+                },
+                { "include": "$self" }
             ]
         },
 
@@ -111,7 +88,7 @@
                     "name": "keyword.declaration.max"
                 }
             },
-            "end": "(?=\\bdo\\b)",
+            "end": "(?=\\bdo\\b)|(?=;)",
             "patterns": [
                 {
                     "match": "\\b(function|coroutine)\\b",
@@ -139,15 +116,29 @@
                             "name": "storage.type.max"
                         },
                         {
-                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+as\\b)",
-                            "name": "variable.parameter.max"
+                                "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\?|\\.\\.\\.)?(?=\\s+as\\b)",
+                                "captures": {
+                                    "1": {
+                                        "name": "variable.parameter.max"
+                                    },
+                                    "2": {
+                                        "name": "punctuation.special.max"
+                                    }
+                                }
+                            },
+                        {
+                            "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\?|\\.\\.\\.)?(?=\\s*[,)=])",
+                            "captures": {
+                                "1": {
+                                    "name": "variable.parameter.max"
+                                },
+                                "2": {
+                                    "name": "punctuation.special.max"
+                                }
+                            }
                         },
                         {
-                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*[,)=])",
-                            "name": "variable.parameter.max"
-                        },
-                        {
-                            "match": "\\b(as)\\b",
+                            "match": "\\b(as|of)\\b",
                             "name": "keyword.control.max"
                         }
                     ]
@@ -155,6 +146,10 @@
                 {
                     "match": "\\b(int|float|string|boolean|list|dictionary)\\b",
                     "name": "storage.type.max"
+                },
+                {
+                    "match": ";",
+                    "name": "punctuation.special.max"
                 }
             ]
         },
@@ -221,7 +216,39 @@
                     }
                 }
             ]
-            },
+        },
+
+        "constant": {
+            "patterns": [
+                {
+                    "include": "#types"
+                },
+                {
+                    "include": "#booleans"
+                },
+                {
+                    "include": "#numbers"
+                },
+                {
+                    "include": "#strings"
+                },
+                {
+                    "include": "#comparisons"
+                },
+                {
+                    "include": "#arithmetic"
+                },
+                {
+                    "include": "#parentheses"
+                },
+                {
+                    "include": "#punctuation"
+                },
+                {
+                    "include": "#identifiers"
+                }
+            ]
+        },
 
         "types": {
             "patterns": [
@@ -286,11 +313,11 @@
             ]
         },
 
-        "lists": {
+        "punctuation": {
             "patterns": [
                 {
-                    "name": "punctuation.brackets.max",
-                    "match": "[\\[\\]]"
+                    "name": "punctuation.semicolon.max",
+                    "match": ";"
                 }
             ]
         },
