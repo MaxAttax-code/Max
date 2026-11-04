@@ -84,7 +84,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
         NativeTarget::Type("DictionaryType"),
         NativeTask::new(
             "attemptGet",
-            None,
+            Some(NoType),
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
             self::dictionary_attempt_get
         )

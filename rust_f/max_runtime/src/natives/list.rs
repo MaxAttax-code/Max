@@ -296,7 +296,7 @@ pub fn list_concatenate(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 
 pub fn list_combine(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     let [Value::List(list), Value::List(appendable)] = args.as_slice() else {
-        panic!("List task add (multiple variant) expects a list receiver and items of any amount");
+        panic!("List task combine expects a list receiver and items of any amount");
     };
 
     let mut list = list.borrow_mut();
