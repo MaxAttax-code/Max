@@ -34,6 +34,8 @@ pub enum Op {
 
     Call(TaskCallOperand),
     CallNative(TaskCallOperand),
+    /// Specified for native module tasks
+    CallNativeForward(TaskCallOperand),
     Return,
     ReturnValue,
     Yield,
@@ -161,6 +163,9 @@ impl MaxType {
                 expected_elem.is_assignable_to(actual_elem)
             }
 
+            // By default!
+            (MaxType::ListType(None), MaxType::ListType(_)) => true,
+
             (MaxType::DictionaryType(Some(expected_key), Some(expected_val)), MaxType::DictionaryType(Some(actual_key), Some(actual_val))) => {
                 expected_key.is_assignable_to(actual_key) && expected_val.is_assignable_to(actual_val)
             }
@@ -185,6 +190,7 @@ impl MaxType {
         }
     }
 
+    /// Converts a string name into a `MaxType`. Errs if no corresponding `MaxType` was found
     pub fn string_name_to_max(name: &str) -> MaxType {
         match name {
             "NumberType" => MaxType::NumberType,
@@ -206,6 +212,24 @@ impl MaxType {
 
             _ => panic!("Unknown MaxType name given: {}", name)
         }
+    }
+
+    /// Inverse of `string_name_to_max`. Only flat names are supported, since that's all the `Option<String>` fields can hold.
+    pub fn to_name(&self) -> Option<String> {
+        Some(match self {
+            MaxType::NumberType => "NumberType",
+            MaxType::IntegerType => "IntegerType",
+            MaxType::FloatType => "FloatType",
+            MaxType::StringType => "StringType",
+            MaxType::BooleanType => "BooleanType",
+            MaxType::PossibleType => "PossibleType",
+            MaxType::ListType(_) => "ListType",
+            MaxType::DictionaryType(..) => "DictionaryType",
+            MaxType::CoroutineType => "CoroutineType",
+            MaxType::TaskType(_) => "TaskType",
+            MaxType::NoType => "NoType",
+            MaxType::EnumType(_) => return None,
+        }.to_string())
     }
 }
 
@@ -245,6 +269,56 @@ impl fmt::Display for MaxType {
         }
     }
 }
+
+
+// ------------------- \\
+// - PARAMETER TYPES - \\
+// ------------------- \\
+
+
+/// A structure that defines what kind of parameter is within a task.
+/// Required: A required argument.
+/// Optional: May be inputted, but not necessary to run the task.
+/// Variadic: May have an infinite number of trailing arguments.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamKind {
+    Required(Option<MaxType>),
+    Optional(Option<MaxType>),
+    Variadic(Option<MaxType>),
+}
+
+impl ParamKind {
+    /// (min, max) argument counts for a signature. `max` is None when variadic.
+    pub fn arity_range(kinds: &[ParamKind]) -> (usize, Option<usize>) {
+        let mut min = 0;
+        let mut max = Some(0);
+
+        for kind in kinds {
+            match kind {
+                ParamKind::Required(_) => { min += 1; max = max.map(|m| m + 1); }
+                ParamKind::Optional(_) => { max = max.map(|m| m + 1); }
+                ParamKind::Variadic(_) => { max = None; }
+            }
+        }
+
+        (min, max)
+    }
+
+    /// Validates the arity of the given Param kinds, in order, and the count of arguments given
+    pub fn validate_arity(kinds: &[ParamKind], count: usize) -> Result<(), String> {
+        let (min, max) = Self::arity_range(kinds);
+
+        if count < min {
+            return Err(format!("expected at least {} argument(s), but got {}", min, count));
+        }
+        if let Some(maximum) = max && count > maximum {
+            return Err(format!("expected at most {} argument(s), but got {}", maximum, count));
+        }
+
+        Ok(())
+    }
+}
+
 
 // ---------------- \\
 // --- OPERANDS --- \\
@@ -298,8 +372,8 @@ pub struct MemberAccessOperand {
 /// The structure of a parameter within Task creation
 #[derive(Debug, Clone)]
 pub struct Parameter {
-    pub max_type: Option<MaxType>,
-    pub name: String
+    pub name: String,
+    pub parameter_kind: ParamKind
 }
 
 /// An operand that feeds us the info to create a task
