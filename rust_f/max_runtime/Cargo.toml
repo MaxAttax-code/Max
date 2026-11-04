@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 max_bytecode = { path = ".." }
 max_compiler = { path = "../max_compiler" }
+chrono = "0.4.45"
+rand = "0.10.3"
