@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     Using,
+
     Integer,
     Float,
     StringLiteral,
@@ -63,12 +64,14 @@ pub enum TokenKind {
     Dot,
     Semicolon,
     Colon,
-    /// Aka the Dollar Sign, '$'
     Dollar,
     Not,
     And,
     Or,
     NotEqualTo,
+    /// '...'
+    Ellipsis,
+    QuestionMark,
 
     LeftParenthesis,
     RightParenthesis,
