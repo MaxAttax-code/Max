@@ -7,6 +7,8 @@ use max_bytecode::MaxType;
 
 pub mod math;
 pub mod iterables;
+pub mod datetime;
+pub mod random;
 
 pub mod number;
 pub mod string;
@@ -56,10 +58,10 @@ impl ParamSpec {
     //     ParamSpec::Optional(None)
     // }
 
-    // /// Creates a variadic Param Spec with typing
-    // pub fn variadic(typing: MaxType) -> ParamSpec {
-    //     ParamSpec::Variadic(Some(typing))
-    // }
+    /// Creates a variadic Param Spec with typing
+    pub fn variadic(typing: MaxType) -> ParamSpec {
+        ParamSpec::Variadic(Some(typing))
+    }
 
     /// Creates a variadic Param Spec with no typing
     pub fn variadic_none() -> ParamSpec {
@@ -296,6 +298,8 @@ impl NativeRegistry {
 
         math::register_module(&mut registry);
         iterables::register_module(&mut registry);
+        datetime::register_module(&mut registry);
+        random::register_module(&mut registry);
 
         number::register_module(&mut registry);
         string::register_module(&mut registry);
@@ -361,11 +365,6 @@ impl NativeRegistry {
         None
     }
 
-    /// Gets the `static_modules_names` HashSet by cloning `static_modules`
-    pub fn static_module_names(&self) -> HashSet<String> {
-        self.static_modules.clone()
-    }
-
     /// Gets the `global_task_names` HashSet by filtering all of `native_functions`,
     /// searching only for functions without a member access
     pub fn global_task_names(&self) -> HashSet<String> {
@@ -380,6 +379,21 @@ impl NativeRegistry {
     /// Simply checks if a given string is a static module name
     pub fn is_static_module(&self, module: String) -> bool {
         self.static_modules.contains(&module)
+    }
+
+    /// Gets the native module tasks
+    pub fn module_task_keys(&self) -> HashSet<String> {
+        self.native_functions.keys().filter(|k| self.is_module_key(k)).cloned().collect()
+    }
+
+    /// Gets the native module properties
+    pub fn module_property_keys(&self) -> HashSet<String> {
+        self.native_properties.keys().filter(|k| self.is_module_key(k)).cloned().collect()
+    }
+
+    /// Ensures that a given set's keys are a static module
+    fn is_module_key(&self, key: &str) -> bool {
+        key.split_once('.').is_some_and(|(module, _)| self.static_modules.contains(module))
     }
 
     /// Get the name key to input into the registry. Allows a target and name, or name alone.
