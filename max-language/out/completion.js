@@ -267,9 +267,10 @@ function registerCompletion(context) {
                     // Specifically for coroutine instances
                     return getNativeMethodsForType("coroutineInstance");
                 }
-                // Just return the general stuff (to be added)
+                // Nothin
                 return [];
             }
+            // 3. All the usual stuff
             // Match variables by detecting 'declare'
             const declarationRegex = /\bdeclare\s+([A-Za-z_][A-Za-z0-9_]*)/g;
             let match;
