@@ -122,14 +122,7 @@ pub enum MaxType {
     NoType
 }
 
-impl MaxType {    
-
-    /// Compares if the max types of this and another type are the same. This ignores values within the Variant Type
-    pub fn compare_valuetypes(&self, other: &MaxType) -> bool {
-        // Like Value logic but with types
-        std::mem::discriminant(self) == std::mem::discriminant(other)
-    }
-
+impl MaxType {
     /**
         Returns true if the `actual` type can be assigned to a variable expecting `self
         ### Example
@@ -188,48 +181,6 @@ impl MaxType {
 
             _ => { println!("Can only call this function on dictionaries!"); false }
         }
-    }
-
-    /// Converts a string name into a `MaxType`. Errs if no corresponding `MaxType` was found
-    pub fn string_name_to_max(name: &str) -> MaxType {
-        match name {
-            "NumberType" => MaxType::NumberType,
-            "IntegerType" => MaxType::IntegerType,
-            "FloatType" => MaxType::FloatType,
-
-            "StringType" => MaxType::StringType,
-
-            "BooleanType" => MaxType::BooleanType,
-            "PossibleType" => MaxType::PossibleType,
-
-            "ListType" => MaxType::ListType(None),
-            "DictionaryType" => MaxType::DictionaryType(None, None),
-
-            "CoroutineType" => MaxType::CoroutineType,
-            "TaskType" => MaxType::TaskType(0),
-
-            "NoType" => MaxType::NoType,
-
-            _ => panic!("Unknown MaxType name given: {}", name)
-        }
-    }
-
-    /// Inverse of `string_name_to_max`. Only flat names are supported, since that's all the `Option<String>` fields can hold.
-    pub fn to_name(&self) -> Option<String> {
-        Some(match self {
-            MaxType::NumberType => "NumberType",
-            MaxType::IntegerType => "IntegerType",
-            MaxType::FloatType => "FloatType",
-            MaxType::StringType => "StringType",
-            MaxType::BooleanType => "BooleanType",
-            MaxType::PossibleType => "PossibleType",
-            MaxType::ListType(_) => "ListType",
-            MaxType::DictionaryType(..) => "DictionaryType",
-            MaxType::CoroutineType => "CoroutineType",
-            MaxType::TaskType(_) => "TaskType",
-            MaxType::NoType => "NoType",
-            MaxType::EnumType(_) => return None,
-        }.to_string())
     }
 }
 
