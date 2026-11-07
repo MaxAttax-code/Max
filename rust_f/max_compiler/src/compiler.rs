@@ -26,14 +26,62 @@ pub struct NativeNames {
     pub global_tasks: HashSet<String>,
 }
 
+/**
+A parameter as the *caller* needs to see it: just a name and a kind.
+
+The compiler needs this (and not the full AST `Parameter`) because binding arguments
+only cares about "what is it called" and "is it required / optional / variadic".
+Binding arguments here means attaching an argument value with it's parameter name.
+Types are still checked at runtime by the VM, so they are not copied here.
+*/
+#[derive(Debug, Clone)]
+pub struct ParamSig { pub name: String, pub kind: ParameterKind }
+
+/**
+This struct is essentially the ANSWER to the puzzle "which argument feeds which parameter".
+It holds indexes into the call's `arguments` list, never the expressions themselves.
+
+```text
+foo(b = 2, 1)  with params (a, b)
+    arguments: [0] b = 2     [1] 1
+    Binding {
+        fixed: [
+            Some(1),
+            ^ a gets arguments[1]
+            Some(0)
+            ^ b gets arguments[0]
+        ],
+        variadic: []
+    }
+```
+*/
+struct Binding {
+    /// Per fixed parameter: index into `arguments`, or None (it becomes nil)
+    fixed: Vec<Option<usize>>,
+    /// Arguments feeding the variadic parameter, in source order
+    variadic: Vec<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub enum SymbolInfo {
-    Task,
+    Task(Vec<ParamSig>),
     Coroutine,
+    Event { parameters: Vec<ParamSig> },
     Enum(Vec<EnumMember>),
 }
 
-/// What a module exposes to the files that `using` it
+/**
+Records what a module exposes to the files that are `using` it, including each task's
+parameter names so those files can bind named arguments.
+
+Events are special: the same event name may be defined many times (one handler each),
+so every handler's parameters are APPENDED to one flat list, in definition order.
+That flat list is exactly the "payload positions" `emit` fills.
+
+Be careful when editing this: every arm must only touch the definition it matched.
+(An earlier draft inserted an `Event` entry for every task and used `break`, which
+ended the loop after the first definition. Silly billy!)
+*/
 #[derive(Debug, Clone)]
 pub struct SymbolTable {
     pub module_name: String,
@@ -46,16 +94,23 @@ impl SymbolTable {
 
         for statement in statements {
             match &statement.kind {
-                StatementKind::TaskDefinition(task) => {
-                    let info = match task.kind {
-                        TaskKind::Coroutine => SymbolInfo::Coroutine,
-                        TaskKind::Function => SymbolInfo::Task,
-                    };
-                    contents.insert(task.name.clone(), info);
-                }
+                StatementKind::TaskDefinition(task) => match task.kind {
+                    TaskKind::Function => { contents.insert(task.name.clone(), SymbolInfo::Task(signature_of(task))); }
+                    TaskKind::Coroutine => { contents.insert(task.name.clone(), SymbolInfo::Coroutine); }
+                    TaskKind::Event => {
+                        if let SymbolInfo::Event { parameters } = contents
+                            .entry(task.name.clone())
+                            .or_insert(SymbolInfo::Event { parameters: Vec::new() })
+                        {
+                            parameters.extend(signature_of(task));
+                        }
+                    }
+                },
+
                 StatementKind::Enum(definition) => {
                     contents.insert(definition.identifier.clone(), SymbolInfo::Enum(definition.members.clone()));
                 }
+
                 _ => {}
             }
         }
@@ -143,6 +198,11 @@ struct EnumNode<'s> {
     children: &'s [EnumMember],
 }
 
+/// A structure containing both the event name and arity.
+/// This is how a module learns of the arity of an event from another module
+#[derive(Clone)]
+struct EventHandler { task_name: String, parameter_count: usize }
+
 pub struct Compiler<'a> {
     /// Our CompileContext for the Compiler
     ctx: &'a CompileContext,
@@ -152,6 +212,8 @@ pub struct Compiler<'a> {
     /// All the OpCodes for the `VirtualMachine` to read
     ops: Vec<bc::Op>,
     tasks: HashMap<String, bc::TaskInfo>,
+    local_tasks: HashMap<String, Vec<ParamSig>>,
+
     coroutines: HashMap<String, bc::CoroutineInfo>,
     enums: HashMap<String, bc::EnumStructure>,
 
@@ -165,8 +227,15 @@ pub struct Compiler<'a> {
     /// Every enum in this file (collected before compiling), as the parser produced them
     local_enums: HashMap<String, Vec<EnumMember>>,
 
-    /// 0 at the top level, above 0 inside a task or lambda
-    task_depth: u32,
+    /// (Name -> handlers) compiled so far, in definition order (used to build the dispatcher)
+    events: HashMap<String, Vec<EventHandler>>,
+    /// (Name -> total parameter count) across every handler in this file. Filled in pass 1, so
+    /// an `emit` can appear before the handlers it fires, and clones into lambda children.
+    local_events: HashMap<String, usize>,
+
+    /// Each level has a boolean, which determines if the task is returnable from or not.
+    /// False at the top level (first element)
+    task_depth: Vec<bool>,
     variable_scopes: Vec<HashMap<String, VarInfo>>,
 }
 
@@ -178,11 +247,14 @@ impl<'a> Compiler<'a> {
             dependencies,
             ops: Vec::new(),
             tasks: HashMap::new(),
+            local_tasks: HashMap::new(),
             coroutines: HashMap::new(),
             enums: HashMap::new(),
             local_enums: HashMap::new(),
+            events: HashMap::new(),
+            local_events: HashMap::new(),
             jump_contexts: Vec::new(),
-            task_depth: 0,
+            task_depth: vec![false],
             variable_scopes: vec![HashMap::new()],
         }
     }
@@ -200,20 +272,35 @@ impl<'a> Compiler<'a> {
             dependencies: self.dependencies,
             ops: Vec::new(),
             tasks: self.tasks.clone(),
+            local_tasks: self.local_tasks.clone(),
             coroutines: self.coroutines.clone(),
             enums: self.enums.clone(),
             local_enums: self.local_enums.clone(),
+            events: HashMap:: new(),
+            local_events: self.local_events.clone(),
             jump_contexts: Vec::new(),
-            task_depth: 1,
+            task_depth: vec![false, true],
             variable_scopes: vec![HashMap::new()],
         }
     }
 
+    /// Compiles from the given array of statements.
+    /// This is also where all local fields are filled
     pub fn compile(mut self, statements: &[Statement]) -> Result<bc::Bytecode, MaxError> {
         // Pass 1: learn every top-level enum, so types and member chains can refer to enums defined later
         for statement in statements {
             if let StatementKind::Enum(definition) = &statement.kind {
                 self.local_enums.insert(definition.identifier.clone(), definition.members.clone());
+            }
+            // Same with events, we want all the arity learned first
+            if let StatementKind::TaskDefinition(task) = &statement.kind
+            {
+                match task.kind {
+                    TaskKind::Event => *self.local_events.entry(task.name.clone()).or_insert(0) += task.parameters.len(),
+                    TaskKind::Function => self.local_tasks.entry(task.name.clone()).or_insert(Vec::new()).extend(signature_of(task)),
+
+                    _ => {}
+                }
             }
         }
 
@@ -229,6 +316,14 @@ impl<'a> Compiler<'a> {
             if !matches!(statement.kind, StatementKind::Enum(_)) {
                 self.compile_statement(statement)?;
             }
+        }
+
+        // Pass 4: one dispatcher per event, now that every handler is known
+        let mut names: Vec<String> = self.events.keys().cloned().collect();
+        names.sort(); // HashMap order is random; keep the bytecode deterministic
+        for name in names {
+            let handlers = self.events[&name].clone();
+            self.emit_event_dispatcher(&name, &handlers);
         }
 
         Ok(bc::Bytecode {
@@ -352,8 +447,14 @@ impl<'a> Compiler<'a> {
         self.variable_scopes.iter().any(|scope| scope.contains_key(name))
     }
 
-    /// A task, coroutine, enum, native global or non-open variable already uses this name
+    /// Ensures the name given is not a duplicate name with `has_duplicate_naming`,
+    /// and also checks if any local events hold that name
     fn has_duplicate_naming(&self, name: &str) -> bool {
+        self.local_events.contains_key(name) || self.non_event_name(name)
+    }
+
+    /// A task, coroutine, enum, native global or non-open variable already uses this name
+    fn non_event_name(&self, name: &str) -> bool {
         if self.tasks.contains_key(name)
             || self.coroutines.contains_key(name)
             || self.enums.contains_key(name)
@@ -439,6 +540,115 @@ impl<'a> Compiler<'a> {
                 Ok(bc::Parameter { name: p.name.clone(), parameter_kind })
             })
             .collect()
+    }
+
+    /// Decides which argument goes to which parameter. Does NOT emit any bytecode.
+    ///
+    /// It works in three passes. The order is the whole trick! 
+    ///
+    /// **1. Named arguments claim their parameters first.** For each `name = value`, find
+    /// the parameter called `name` and mark it taken. This is the "remove it from the
+    /// temporary stack" idea: claimed parameters are simply not free any more,
+    /// thus the unnamed arguments will skip over them.\
+    /// **Errors**: unknown name, same name given twice, or the name is ambiguous
+    /// (events: two handlers both have a param called `str`).
+    ///
+    /// **2. Unnamed arguments fill the leftover (free) parameters, left to right.**
+    /// If the free parameters run out, the extras go to the variadic parameter (if there
+    /// is one), otherwise *"too many arguments"*.
+    ///
+    /// **3. Check nothing required is missing.** A `Required` parameter with no argument
+    /// is an error. An `Optional` one is fine (it becomes nil).\
+    /// Note that Events skip this check, since every event payload may be omitted.
+    ///
+    /// ```text
+    /// foo(name = "Max", false, 10)  with params (name, flag, count)
+    ///   pass 1: name -> claims slot 0                       fixed = [Some(0), None, None]
+    ///   pass 2: free slots are [1, 2]
+    ///           false -> slot 1, 10 -> slot 2               fixed = [Some(0), Some(1), Some(2)]
+    ///   pass 3: nothing missing, done
+    ///
+    /// foo(b = 2, 1)  with params (a, b)
+    ///   pass 1: b -> claims slot 1                          fixed = [None, Some(0)]
+    ///   pass 2: free slots are [0]; `1` -> slot 0           fixed = [Some(1), Some(0)]
+    /// ```
+    ///
+    /// Note that unnamed arguments may come AFTER named ones. That is a deliberate Max
+    /// rule (Python would forbid it).
+    ///
+    /// * `callee`: only used in error messages
+    /// * `params`: the callee's parameters (variadic, if any, must be last)
+    /// * `span`: where to point the "missing argument" error
+    /// * `event`: true when binding an `emit`
+    fn bind_arguments(&self, callee: &str, params: &[ParamSig], args: &[Argument], span: Span, event: bool)
+        -> Result<Binding, MaxError>
+    {
+        // Step by Step! \\
+        // First check if a variadic exists, then the *fixed* params if it does exist!
+        let has_variadic = params.last().is_some_and(|p| matches!(p.kind, ParameterKind::Variadic));
+        let fixed_params = if has_variadic { &params[..params.len() - 1] } else { params };
+        
+        // A seperate vec for fixed params that have a specified index in the param list
+        let mut fixed: Vec<Option<usize>> = vec![None; fixed_params.len()];
+
+        // 1. Named arguments claim their parameters
+        for (i, arg) in args.iter().enumerate() {
+            let Some(named) = &arg.name else { continue };
+
+            // If more than one match is found, that's nonesensical!
+            let matches = fixed_params.iter().filter(|p| p.name == named.node).count();
+            if matches > 1 {
+                return Err(error(named.span, format!(
+                    "'{}' names a parameter in more than one handler of '{callee}', so it can't be used as a name", named.node)));
+            }
+
+            // Or just does not exist?
+            let Some(slot) = fixed_params.iter().position(|p| p.name == named.node) else {
+                return Err(error(named.span, format!("'{callee}' has no parameter called '{}'", named.node)));
+            };
+
+            // Already?
+            if fixed[slot].is_some() {
+                return Err(error(named.span, format!("Parameter '{}' was given more than once", named.node)));
+            }
+            // When all checks pass
+            fixed[slot] = Some(i);
+        }
+
+        // 2. Unnamed arguments fill what is left, in order
+        // Complex ahh. But filters any leftover fixed elements (have 'None' aka no name)
+        let mut free = (0..fixed.len()).filter(
+            |&s| fixed[s].is_none()
+        ).collect::<Vec<_>>().into_iter();
+
+        // For when a variadic exists, where all extra arguments fall through to
+        let mut variadic = Vec::new();
+
+        for (i, arg) in args.iter().enumerate() {
+            if arg.name.is_some() { continue; }
+            
+            // Match against a free param when the arg has no name
+            match free.next() {
+                // Slot assigned
+                Some(slot) => fixed[slot] = Some(i),
+                // No slot, but it's variadic
+                None if has_variadic => variadic.push(i),
+                // Random bs go?
+                None => return Err(error(arg.value.span, format!(
+                    "'{callee}' takes at most {} argument(s), but more were given", fixed_params.len()))),
+            }
+        }
+
+        // 3. Nothing required may be missing
+        if !event /* Events ignore missing params anyway */ {
+            for (slot, p) in fixed_params.iter().enumerate() {
+                if fixed[slot].is_none() && matches!(p.kind, ParameterKind::Required) {
+                    return Err(error(span, format!("Missing argument for parameter '{}' of '{callee}'", p.name)));
+                }
+            }
+        }
+
+        Ok(Binding { fixed, variadic })
     }
 
     // ---------------------------- //
@@ -646,6 +856,8 @@ impl<'a> Compiler<'a> {
 
             StatementKind::Return(value) => self.compile_return(value.as_ref(), statement.span)?,
             StatementKind::Yield(value) => self.compile_yield(value.as_ref())?,
+            StatementKind::Emit(event) => self.compile_emit(event)?,
+
             StatementKind::TaskDefinition(task) => self.compile_task_definition(task)?,
             StatementKind::Enum(definition) => self.compile_enum_definition(definition)?,
         }
@@ -653,7 +865,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_declaration(&mut self, declaration: &Declaration) -> Result<(), MaxError> {
-        if self.task_depth == 0 {
+        if self.task_depth.len() == 1 {
             if self.has_duplicate_naming(&declaration.name) {
                 return Err(error(
                     declaration.name_span,
@@ -972,8 +1184,11 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_return(&mut self, value: Option<&Expression>, span: Span) -> Result<(), MaxError> {
-        if self.task_depth == 0 {
+        if self.task_depth.len() == 1 {
             return Err(error(span, "Return statements can only be used inside a task."));
+        }
+        if let Some(bool) = self.task_depth.last() && bool == &false {
+            return Err(error(span, "Return statements can only be used inside a returnable task."));
         }
 
         match value {
@@ -995,17 +1210,151 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    fn compile_emit(&mut self, call: &Expression) -> Result<(), MaxError> {
+        let ExpressionKind::Call { callee, arguments } = &call.kind else {
+            return Err(error(call.span, "'emit' must be followed by an event call, e.g. emit name(payload)"));
+        };
+
+        // `name` in this file, or `module.name` from a `using` module
+        // We always have to do this...
+        let (target, name, arity) = match &callee.kind {
+            ExpressionKind::Variable(name) => match self.local_events.get(name) {
+                Some(&arity) => (None, name, arity),
+                // Not a found local event? What a scam!
+                None => return Err(error(callee.span, format!("Unknown event '{name}'"))),
+            },
+
+            ExpressionKind::MemberAccess { target, member } => {
+                // Yada yada...
+                let ExpressionKind::Variable(module) = &target.kind else {
+                    return Err(error(callee.span, "Expected an event name or module.event after 'emit'"));
+                };
+                if !self.dependencies.contains(module) {
+                    return Err(error(callee.span, format!("Module '{module}' must be imported with 'using' to emit its events")));
+                }
+                match self.ctx.symbols.get(module).and_then(|t| t.contents.get(member)) {
+                    Some(SymbolInfo::Event { parameters }) => (Some(module.clone()), member, parameters.len()),
+
+                    _ => return Err(error(callee.span, format!("Module '{module}' has no event '{member}'"))),
+                }
+            }
+
+            _ => return Err(error(callee.span, "Expected an event name after 'emit'")),
+        };
+
+        // Yippee doodle!
+        if arguments.len() > arity {
+            return Err(error(callee.span, format!(
+                "Event '{name}' takes at most {arity} payload(s) across all its handlers, but {} were given",
+                arguments.len()
+            )));
+        }
+
+        let signature = self.lookup_signature(name);
+
+        self.compile_call_arguments(name, signature, arguments, callee.span)?;
+        for _ in arguments.len()..arity {
+            self.emit_constant(bc::ConstValue::Nil); // Omitted payloads become nil, quite indeed
+        }
+
+        // Emitting a task is otherwise really similar to a task call!
+        self.emit(bc::Op::Call(bc::TaskCallOperand {
+            target,
+            name: format!("{name}#emit"),
+            argument_count: arity as u64,
+            is_member_access: false,
+        }));
+        self.emit(bc::Op::Pop);
+        Ok(())
+    }
+
     // ---------------------------- //
     // ---------- TASKS ----------- //
     // ---------------------------- //
 
+    fn emit_event_dispatcher(&mut self, event: &str, handlers: &[EventHandler]) {
+        let total: usize = handlers.iter().map(|h| h.parameter_count).sum();
+        let skip_body = self.emit_jump(bc::Op::Jump);
+        let entry_point = self.ops.len() as u64;
+
+        self.tasks.insert(format!("{event}#emit"), bc::TaskInfo {
+            entry_point,
+            parameters: (0..total)
+                // Params are ALWAYS Optional in an Event!
+                .map(|i| bc::Parameter {
+                    name: format!("#{i}"),
+                    parameter_kind: max_bytecode::ParamKind::Optional(None)
+                })
+                .collect(),
+            return_type: None,
+        });
+
+        let mut offset = 0;
+        for handler in handlers {
+            for i in offset..offset + handler.parameter_count {
+                self.emit(bc::Op::Load(format!("#{i}")));
+            }
+            self.emit(bc::Op::Call(bc::TaskCallOperand {
+                target: None,
+                name: handler.task_name.clone(),
+                argument_count: handler.parameter_count as u64,
+                is_member_access: false,
+            }));
+            self.emit(bc::Op::Pop); // a handler's Return pushes nil
+            offset += handler.parameter_count;
+        }
+        self.emit(bc::Op::Return);
+
+        let end = self.ops.len();
+        self.patch_jump(skip_body, end);
+    }
+
     fn compile_task_definition(&mut self, task: &TaskDefinition) -> Result<(), MaxError> {
-        if self.has_duplicate_naming(&task.name) {
+        // Just a sneaky peek
+        let is_event = task.kind == TaskKind::Event;
+
+        if is_event {
+            // Only top level
+            if self.task_depth.len() != 1 {
+                return Err(error(task.name_span, "Events can only be defined at the top level of a file"));
+            }
+            // No return types are wanted
+            if task.return_type.is_some() {
+                return Err(error(task.name_span, "Events cannot return a value, so they cannot declare a return type"));
+            }
+            // Not an event name
+            if self.non_event_name(&task.name) {
+                return Err(error(task.name_span, format!("A task, variable or enum of the same name has already been defined: {}", task.name)));
+            }
+
+            // Check for variadic params in an event, which are NOT allowed!
+            if let Some(variadic) = task.parameters.iter().find(|p| p.kind == ParameterKind::Variadic) {
+                return Err(error(
+                    task.name_span,
+                    format!(
+                        "Event handlers cannot have variadic parameters ('{}...'). \
+                        Payloads are split between handlers by position, so use a list payload instead",
+                        variadic.name
+                    ),
+                ));
+            }
+        }
+        else if self.has_duplicate_naming(&task.name) {
             return Err(error(
                 task.name_span,
                 format!("A task or variable of the same name has already been defined: {}", task.name),
             ));
         }
+
+        // A function keeps its own name. A handler gets `name#index`
+        let task_key = if is_event {
+            let handlers = self.events.entry(task.name.clone()).or_default();
+            let key = format!("{}#{}", task.name, handlers.len());
+            handlers.push(EventHandler { task_name: key.clone(), parameter_count: task.parameters.len() });
+            key
+        } else {
+            task.name.clone()
+        };
 
         let return_type = self.convert_optional_type(&task.return_type)?;
 
@@ -1020,12 +1369,13 @@ impl<'a> Compiler<'a> {
         let saved_contexts = std::mem::take(&mut self.jump_contexts);
 
         match task.kind {
-            TaskKind::Function => {
+            TaskKind::Function | TaskKind::Event => {
                 let parameters = self.convert_parameters(&task.parameters)?;
 
                 // Registered before the body, so the task can call itself
                 self.tasks.insert(
-                    task.name.clone(),
+                    // For an event, this is instead a unique ID key!
+                    task_key.clone(),
                     bc::TaskInfo { entry_point, parameters, return_type },
                 );
 
@@ -1044,7 +1394,7 @@ impl<'a> Compiler<'a> {
                     }
                 }
 
-                self.task_depth += 1;
+                self.task_depth.push(true);
                 let result = if task.is_native {
                     self.emit(bc::Op::CallNativeForward(bc::TaskCallOperand {
                         target: Some(self.module_name.to_string()),
@@ -1057,7 +1407,7 @@ impl<'a> Compiler<'a> {
                 } else {
                     self.compile_statements(&task.body)
                 };
-                self.task_depth -= 1;
+                self.task_depth.pop();
                 result?;
 
                 self.emit(bc::Op::Return);
@@ -1072,9 +1422,9 @@ impl<'a> Compiler<'a> {
                 let info = bc::CoroutineInfo { entry_point, return_type };
                 self.coroutines.insert(task.name.clone(), info.clone());
 
-                self.task_depth += 1;
+                self.task_depth.push(true);
                 let result = self.compile_statements(&task.body);
-                self.task_depth -= 1;
+                self.task_depth.pop();
                 result?;
 
                 self.emit(bc::Op::ExitScope);
@@ -1103,7 +1453,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_task_call(&mut self, callee: &Expression, arguments: &[Expression]) -> Result<(), MaxError> {
+    fn compile_task_call(&mut self, callee: &Expression, arguments: &[Argument]) -> Result<(), MaxError> {
         if let ExpressionKind::MemberAccess { target, member } = &callee.kind {
             if let ExpressionKind::Variable(target_name) = &target.kind {
                 // A variable of the same name hides any module
@@ -1114,11 +1464,17 @@ impl<'a> Compiler<'a> {
                     && let Some(table) = self.ctx.symbols.get(target_name)
                     && table.contents.contains_key(member)
                 {
-                    self.compile_arguments(arguments)?;
+                    // Get our signature and count here
+                    let signature = match table.contents.get(member) {
+                        Some(SymbolInfo::Task(t)) => Some(t.clone()),
+                        _ => None
+                    };
+                    let count = self.compile_call_arguments(member, signature, arguments, callee.span)?;
+                    
                     self.emit(bc::Op::Call(bc::TaskCallOperand {
                         target: Some(target_name.clone()),
                         name: member.clone(),
-                        argument_count: arguments.len() as u64,
+                        argument_count: count,
                         is_member_access: false,
                     }));
                     return Ok(());
@@ -1126,29 +1482,171 @@ impl<'a> Compiler<'a> {
             }
 
             // Instance method: the target is pushed first, as `self`
+            // Names can never be known like this
             self.compile_expression(target)?;
-            self.compile_arguments(arguments)?;
+            let count = self.compile_call_arguments(member, None, arguments, callee.span)?;
             self.emit(bc::Op::CallNative(bc::TaskCallOperand {
                 target: None,
                 name: member.clone(),
-                argument_count: arguments.len() as u64 + 1,
+                argument_count: count + 1, // + 'self'
                 is_member_access: true,
             }));
             return Ok(());
         }
 
         // A plain call by name
-        self.compile_arguments(arguments)?;
-        let operand = self.resolve_task_operand(callee, arguments.len() as u64)?;
+        let signature = match &callee.kind {
+            ExpressionKind::Variable(v) => self.lookup_signature(v),
+            _ => None
+        };
+        // A custom label must be made since the callee is not a member access. We expect it to be a variable name otherwise
+        let label = if let ExpressionKind::Variable(n) = &callee.kind {
+            n.as_str()
+        } else { "self-task" };
+        let count = self.compile_call_arguments(label, signature, arguments, callee.span)?;
+
+        let operand = self.resolve_task_operand(callee, count)?;
         self.emit(bc::Op::Call(operand));
         Ok(())
     }
 
-    fn compile_arguments(&mut self, arguments: &[Expression]) -> Result<(), MaxError> {
-        for argument in arguments {
-            self.compile_expression(argument)?;
+    /**
+    Finds the parameter list of a task called by plain name, e.g. `foo(...)`.
+    Returns `None` when the compiler cannot know the parameters, which means named
+    arguments are not allowed for this call (see `compile_call_arguments`).
+
+    The lookup order mirrors `resolve_task_operand`, so both agree on what `foo` means:
+    1. A declared **variable** wins. It is probably a lambda, and a variable can be
+       reassigned, so its parameters are unknowable at compile time.
+    2. A task defined in **this file** (collected in pass 1 of `compile`, so order does not matter).
+    3. A task from a module this files imports with **`using`**.
+
+    Natives like `input` and methods like `list.add` are not found here, on purpose.
+
+    Returns a clone, not a reference: the caller needs `&mut self` right afterwards to
+    emit bytecode, and a borrowed signature would block that.
+    */
+    fn lookup_signature(&self, name: &str) -> Option<Vec<ParamSig>> {
+        if self.is_variable_declared(name) { return None; } // a lambda in a variable
+        if let Some(sig) = self.local_tasks.get(name) { return Some(sig.clone()); }
+        
+        for dependency in self.dependencies {
+            if let Some(SymbolInfo::Task(sig)) = self.ctx.symbols.get(dependency).and_then(|t| t.contents.get(name)) {
+                return Some(sig.clone());
+            }
         }
-        Ok(())
+        None
+    }
+
+    /// Emits the bytecode for a call's arguments using a [`Binding`], and returns how many
+    /// values the call will receive (the `argument_count` for `Op::Call`).
+    ///
+    /// The VM's `Call` expects its arguments on the stack **in parameter order**, but the
+    /// user may have written them in any order, and side effects must still happen **in
+    /// the order written**. So this does it in three steps:
+    ///
+    /// **1. Push every argument in SOURCE order.** `foo(b = f(), g())` runs `f` first,
+    /// then `g`, exactly as written.
+    ///
+    /// **2. Push a `nil` for every parameter nobody supplied that still needs a slot.**
+    /// These go after the real arguments. A gap BEFORE a supplied parameter must become an
+    /// explicit nil. Trailing unfilled optionals are simply dropped (the VM already fills
+    /// those). Events set `event = true` and always fill every slot, because the event
+    /// dispatcher takes the full list.
+    ///
+    /// **3. Emit `Op::Permute(order)` to reorder what is on the stack.**
+    /// `order[k]` means "the value pushed at position `order[k]` becomes the k-th argument".
+    /// The variadic arguments are appended at the end, in source order. If `order` is
+    /// already 0, 1, 2, ... nothing needs reordering! So no instruction is emitted and a
+    /// normal call costs nothing extra.
+    ///
+    /// ```text
+    /// foo(b = 2, 1)  with params (a, b),  binding.fixed = [Some(1), Some(0)]
+    ///   step 1: push 2, push 1          stack: [2, 1]      (source order)
+    ///   step 2: no gaps
+    ///   step 3: order = [1, 0]          Permute -> stack: [1, 2]   a = 1, b = 2
+    ///
+    /// foo(c = 3, 1)  with params (a, b?, c)   (b is optional)
+    ///   step 1: push 3, push 1          stack: [3, 1]
+    ///   step 2: b has no argument but sits before c, so push nil -> stack: [3, 1, nil]
+    ///   step 3: order = [1, 2, 0]       Permute -> stack: [1, nil, 3]
+    /// ```
+    ///
+    /// Why not temporaries (`TemporaryStore` / `TemporaryLoad`), you might say? Their slots are global, so
+    /// a recursive call at the same call site would overwrite them half way through.
+    /// `Permute` works on the stack, which is recursion-safe.
+    fn compile_bound_arguments(&mut self, binding: &Binding, args: &[Argument], event: bool) -> Result<u64, MaxError> {
+        // Source order, so side effects happen as written
+        for arg in args { self.compile_expression(&arg.value)?; }
+
+        // Trailing unfilled optionals are dropped (the VM fills them with nil). Events always fill every slot,
+        // since the dispatcher takes the full list. Gaps before a filled param become explicit nils.
+        let keep = if event {
+            binding.fixed.len()
+        } else {
+            binding.fixed.iter().rposition(|s| s.is_some()).map_or(0, |p| p + 1)
+        };
+
+        // One is for how many are pushed, another is the order of the args (in indexes)
+        let mut pushed = args.len();
+        let mut order: Vec<usize> = Vec::new();
+
+        for slot in &binding.fixed[..keep] {
+            // If an index, the ordered args are pushed into, otherwise push AND add to pushed counter
+            match slot {
+                Some(index) => order.push(*index),
+                None => { self.emit_constant(bc::ConstValue::Nil); order.push(pushed); pushed += 1; }
+            }
+        }
+        // Extend by the variadic bound
+        order.extend(binding.variadic.iter().copied());
+
+        // Now we PERMUTE all the ordered params
+        // Note that the ordered vec can contain NILS found from the slot matching above
+        if order.iter().enumerate().any(|(k, &i)| k != i) {
+            self.emit(bc::Op::Permute(order.clone()));
+        }
+        Ok(order.len() as u64) // the `argument_count` for the Call
+    }
+
+    /**
+    The front door for compiling a call's arguments. Returns the `argument_count`.
+
+    * **Signature known** (`Some`): bind with `bind_arguments`, emit with
+      `compile_bound_arguments`. Even calls with no named arguments go through this, so
+      arity mistakes ("too many arguments", "missing argument") become compile errors
+      instead of VM panics.
+    * **Signature unknown** (`None`): named arguments are rejected with a clear error,
+      and plain positional arguments are compiled in order as before.
+
+    When is the signature unknown? Instance methods (`list.add(...)`, because the
+    receiver's type isn't known until runtime), native tasks (their parameters have no
+    names yet) and lambdas stored in variables (the variable could be reassigned).
+
+    `callee` is only used for error messages.
+    */
+    fn compile_call_arguments(&mut self, callee: &str, signature: Option<Vec<ParamSig>>, args: &[Argument], span: Span)
+        -> Result<u64, MaxError>
+    {
+        match signature {
+            // There are params named? Great!
+            Some(params) => {
+                let binding = self.bind_arguments(callee, &params, args, span, false)?;
+                self.compile_bound_arguments(&binding, args, false)
+            }
+
+            // There are no params named? Great!
+            None => {
+                // But... what if the args are an imposter?
+                if let Some(named) = args.iter().find_map(|a| a.name.as_ref()) {
+                    return Err(error(named.span, format!(
+                        "Named arguments can't be used here: the parameters of '{callee}' aren't known at compile time")));
+                }
+                // Crewmates win
+                for arg in args { self.compile_expression(&arg.value)?; }
+                Ok(args.len() as u64)
+            }
+        }
     }
 
     /// Decides whether a plain call is local or goes to an imported module
@@ -1502,4 +2000,17 @@ fn contains_return(statements: &[Statement]) -> bool {
         StatementKind::Foreach(f) => contains_return(&f.body),
         _ => false,
     })
+}
+
+/**
+Builds the `ParamSig` list for a task definition, in declaration order.
+
+Used in two places: pass 1 of `compile()` (so calls can be bound even to tasks defined
+LATER in the same file) and `SymbolTable::from_statements` (so other files can bind
+calls to tasks they import).
+Unlike `lookup_signature` in [`compiler`][`Compiler`], this directly intakes a task definition,
+meaning there will be a known vector of `ParamSig`, even if it is empty
+*/
+fn signature_of(task: &TaskDefinition) -> Vec<ParamSig> {
+    task.parameters.iter().map(|p| ParamSig { name: p.name.clone(), kind: p.kind.clone() }).collect()
 }

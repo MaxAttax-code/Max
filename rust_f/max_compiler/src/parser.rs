@@ -325,6 +325,7 @@ impl Parser {
                 Some(K::LeftParenthesis) => {
                     expression = self.parse_task_call(expression)?;
                 }
+                
                 _ => return Ok(expression),
             }
         }
@@ -344,9 +345,20 @@ impl Parser {
         }
     }
 
-    /// Parses a task call, consuming the left parenthesis,
-    /// parsing an expression as an argument, with commas indicating another argument following,
-    /// finall consuming the final right parenthesis.
+    /**
+    Parses a call's argument list: everything between `(` and `)`.
+
+    Each argument is either `expression` or `identifier = expression`. The name is detected
+    with a two token lookahead: an `Identifier` followed by a lone `=` (`K::Equals`).
+    That lookahead is safe because the lexer turns `==` into `Comparator` and `=>` into
+    `EvaluateTo`, so a lone `=` can never be anything else here. Max has no assignment
+    *expressions* (assignments are statements), so `foo(x = 5)` has no other meaning.
+
+    A plain variable such as `foo(x)` stays an unnamed argument. Only `x =` makes it a name.
+
+    The parser deliberately does NOT check the names. It cannot know the callee's
+    parameters, so everything is checked later in `bind_arguments`.
+    */
     fn parse_task_call(&mut self, callee: Expression) -> Result<Expression, MaxError> {
         self.expect(K::LeftParenthesis)?;
 
@@ -354,14 +366,24 @@ impl Parser {
             .unwrap_or_else(|| panic!("Error from attempting to get span during task call"))
         );
 
-        let mut arguments = Vec::new();
+        // Each arg is assigned to it's name
+        let mut arguments: Vec<Argument> = Vec::new();
         if !self.check(K::RightParenthesis) {
             loop {
-                let arg = self.parse_expression()?;
-                arguments.push(arg);
-                if !self.eat(K::Comma) {
-                    break;
-                }
+                // The '=' always signifies the first name name given is the name of the parameter
+                let name = if self.check(K::Identifier) && self.peek_kind(1) == Some(K::Equals) {
+                    let token = self.consume()?;
+                    self.pos += 1; // the '='
+
+                    Some(Spanned { span: Span::from(&token), node: token.value })
+                } else {
+                    None
+                };
+
+                let value = self.parse_expression()?;
+                arguments.push(Argument { name, value });
+
+                if !self.eat(K::Comma) { break; }
             }
         }
         self.expect(K::RightParenthesis)?;
@@ -645,6 +667,14 @@ impl Parser {
             K::Yield => {
                 self.pos += 1;
                 StatementKind::Yield(self.parse_optional_value()?)
+            }
+            K::Emit => {
+                self.pos += 1;
+                let call = self.parse_expression()?;
+                if !matches!(call.kind, ExpressionKind::Call { .. }) {
+                    return Err(Self::error_at(&token, "Expected an event call after 'emit'"))
+                };
+                StatementKind::Emit(call)
             }
 
             K::Using => StatementKind::Using(self.parse_using()?),
@@ -1044,6 +1074,7 @@ impl Parser {
         let kind = match kind_token.value.as_str() {
             "function" => TaskKind::Function,
             "coroutine" => TaskKind::Coroutine,
+            "event" => TaskKind::Event,
             other => return Err(Self::error_at(&kind_token, format!("Unknown task type '{other}'"))),
         };
 
@@ -1051,7 +1082,7 @@ impl Parser {
         let name_span = Span::from(&name_token);
         let name = name_token.value;
 
-        let parameters =
+        let parameters: Vec<Parameter> = // The if block
         // '=>'
         if self.eat(K::EvaluateTo) {
             Vec::new() // No params by default
@@ -1066,7 +1097,11 @@ impl Parser {
             return Err(self.error_here("Expected a task name to be followed by '=>' or parameters ('with')"));
         };
 
-        let return_type = if self.eat(K::Return) { Some(self.parse_span_type()?) } else { None };
+        let return_type = if self.eat(K::Return) {
+            Some(self.parse_span_type()?)
+        } else {
+            None
+        };
 
         if self.eat(K::Semicolon) {
             if !is_native {
