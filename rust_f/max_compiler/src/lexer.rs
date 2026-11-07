@@ -193,7 +193,7 @@ impl Lexer {
             "define" => K::Define,
             "enum" => K::Enum,
 
-            "function" | "coroutine" => K::TaskType,
+            "function" | "coroutine"  | "event" => K::TaskType,
             "static" | "open" | "fixed" => K::Modifier,
 
             "true" | "false" | "possible" => K::Boolean,
@@ -206,6 +206,7 @@ impl Lexer {
             "conclude" => K::ConcludeStatement,
             "return" => K::Return,
             "yield" => K::Yield,
+            "emit" => K::Emit,
 
             "while" => K::While,
             "for" => K::For,
