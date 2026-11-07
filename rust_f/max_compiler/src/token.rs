@@ -33,6 +33,7 @@ pub enum TokenKind {
     ConcludeStatement,
     Return,
     Yield,
+    Emit,
 
     While,
     Do,

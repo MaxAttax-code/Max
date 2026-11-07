@@ -119,6 +119,7 @@ pub enum ExpressionKind {
     Nil,
     List(Vec<Expression>),
     Dictionary(Vec<(Expression, Expression)>),
+
     Variable(String),
 
     Binary { left: Box<Expression>, op: BinaryOp, right: Box<Expression> },
@@ -128,7 +129,7 @@ pub enum ExpressionKind {
 
     Index { target: Box<Expression>, index: Box<Expression> },
     MemberAccess { target: Box<Expression>, member: String },
-    Call { callee: Box<Expression>, arguments: Vec<Expression> },
+    Call { callee: Box<Expression>, arguments: Vec<Argument> },
     Lambda(Lambda),
 }
 
@@ -148,7 +149,7 @@ pub enum LambdaBody {
 
 /// For task definitions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskKind { Function, Coroutine }
+pub enum TaskKind { Function, Coroutine, Event }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle { Open, Static }
@@ -175,6 +176,25 @@ pub struct Parameter {
     pub type_ref: Option<Spanned<TypeRef>>,
     pub name: String,
     pub kind: ParameterKind
+}
+
+/**
+One argument in a call: `value` or `name = value`.
+
+This replaces the plain `Expression` that `Call` used to hold. A Vec of these keeps the
+**order the user wrote them in**, which matters twice: evaluation order (side effects
+run as written) and positional filling (unnamed arguments fill in the order they appear).
+
+```text
+foo(b = 2, 1)   ->  [ Argument { name: Some("b"), value: 2 },
+                      Argument { name: None,      value: 1 } ]
+```
+*/
+#[derive(Debug, Clone, PartialEq)]
+pub struct Argument {
+    /// Some(..) for `name = value`, otherwise None. None means the VM will match the argument with it's corresponding parameter by order
+    pub name: Option<Spanned<String>>,
+    pub value: Expression,
 }
 
 /// An enum member as parsed. The compiler adds the enum name and path when it builds the bytecode.
@@ -305,6 +325,7 @@ pub enum StatementKind {
 
     Return(Option<Expression>),
     Yield(Option<Expression>),
+    Emit(Expression),
 
     // Pretty special, they have no operands
     Break,
