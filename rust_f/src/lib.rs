@@ -11,6 +11,8 @@ pub enum Op {
     Lambda(Arc<LambdaOperand>),
     MemberAccess(MemberAccessOperand),
 
+    Permute(Vec<usize>),
+
     Store(StoreOperand),
     TemporaryStore(u64),
     Update(UpdateOperand),
