@@ -91,7 +91,7 @@
             "end": "(?=\\bdo\\b)|(?=;)",
             "patterns": [
                 {
-                    "match": "\\b(function|coroutine)\\b",
+                    "match": "\\b(function|coroutine|event)\\b",
                     "name": "meta.definition.type.max"
                 },
                 {
