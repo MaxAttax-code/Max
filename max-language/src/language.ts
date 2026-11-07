@@ -35,6 +35,7 @@ export const keywords = [
     "with",
     "return",
     "yield",
+    "emit",
     "members"
 ]
 
@@ -61,7 +62,8 @@ export const iterTypes = [
 
 export const taskTypes = [
     "function",
-    "coroutine"
+    "coroutine",
+    "event"
 ]
 
 export const globalTasks: Record<string, string> = {

@@ -32,6 +32,7 @@ exports.keywords = [
     "with",
     "return",
     "yield",
+    "emit",
     "members"
 ];
 exports.operators = [
@@ -54,7 +55,8 @@ exports.iterTypes = [
 ];
 exports.taskTypes = [
     "function",
-    "coroutine"
+    "coroutine",
+    "event"
 ];
 exports.globalTasks = {
     "input": `Accepts an input from the user using stdin.

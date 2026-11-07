@@ -164,7 +164,8 @@ export function registerLint(_context: vscode.ExtensionContext) {
 
     enum TaskType {
         function,
-        coroutine
+        coroutine,
+        event
     }
 
     enum LifecycleModifier {
@@ -898,6 +899,7 @@ export function registerLint(_context: vscode.ExtensionContext) {
             switch (taskTypeName) {
                 case "function": taskType = TaskType.function; break;
                 case "coroutine": taskType = TaskType.coroutine; break;
+                case "event": taskType = TaskType.event; break;
 
                 default: {
                     diags.push(new vscode.Diagnostic(
@@ -948,6 +950,15 @@ export function registerLint(_context: vscode.ExtensionContext) {
             }
 
             if (returnType !== undefined) {
+                if (taskType == TaskType.event) {
+                    diags.push(new vscode.Diagnostic(
+                        new vscode.Range(startPos, endPos),
+                        `Cannot have a return type for an event`,
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                    continue;
+                }
+
                 if (!isTypeName(returnType)) {
                     diags.push(new vscode.Diagnostic(
                         new vscode.Range(startPos, endPos),
