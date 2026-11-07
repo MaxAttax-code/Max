@@ -1,4 +1,5 @@
 use max_bytecode::*;
+use max_compiler::error::MaxError;
 use crate::natives::NativeRegistry;
 use std::sync::Arc;
 use std::{cell::RefCell, rc::Rc};
@@ -658,7 +659,8 @@ impl VirtualMachine {
     /// The heart of the VM and what allows it to execute all bytecode instructions
     /// Must have a Bytecode param passed in
     pub fn run(&mut self, module_name: String, bytecode: Bytecode) {
-        self.run_chunk(module_name, bytecode, true);
+        let binding = module_name.clone();
+        self.run_chunk(module_name, bytecode).expect(&format!("Error running file {}.", binding).into_boxed_str());
     }
 
     /// Begins executing the first 'main' file found, starting from instruction zero
@@ -667,14 +669,14 @@ impl VirtualMachine {
         let main_module = self.modules.get("main").cloned().expect("No main.max file inside modules found!");
 
         // Begin execution loop starting at instruction 0 in mainD
-        self.run_chunk(String::from("main"), main_module, false);
+        self.run_chunk(String::from("main"), main_module).expect("Error running main.max.");
     }
 
     /// The function that runs through any bytecode given.
     /// Although it's used to run the first bytecode that is given,
     /// it can also be used to run other seperate bytecode chunks.
     /// E.g. from a lambda, check out the VM's `call_lambda` function.
-    fn run_chunk(&mut self, module_name: String, bytecode: Bytecode, print_completion: bool) {
+    fn run_chunk(&mut self, module_name: String, bytecode: Bytecode) -> Result<(), MaxError> {
         self.module_name = module_name;
 
         self.task_definitions = Arc::clone(&bytecode.tasks); // Give ourselves the current tasks defined
@@ -719,7 +721,7 @@ impl VirtualMachine {
                             self.stack.push(Value::Nil);
                         }
                         _ => {
-                            panic!("{:?} is not a ConstValue meant to be intaken by Op::Constant", c)
+                            return Self::runtime_error(format!("{:?} is not a ConstValue meant to be intaken by Op::Constant", c))
                         }
                     }
                 }
@@ -750,7 +752,7 @@ impl VirtualMachine {
 
                         // Validate typing
                         if !MaxType::DictionaryType(None, None).valid_dictkey_type(&key.get_type()) {
-                            panic!("Invalid");
+                            return Self::runtime_error("Invalid Dictionary key type");
                         }
 
                         // We insert it at the beginning, because AGAIN!
@@ -792,7 +794,7 @@ impl VirtualMachine {
                         if let Some(entry) = entry {
                             captures.insert(name.clone(), entry.clone());
                         } else {
-                            panic!("[IP {:04}] Captured variable '{}' is not defined.", ip, name);
+                            return Self::runtime_error(format!("[IP {:04}] Captured variable '{}' is not defined.", ip, name));
                         }
                     }
 
@@ -812,7 +814,7 @@ impl VirtualMachine {
                             let target_val = self.stack.pop().unwrap_or(Value::Nil);
                             let module_name = match target_val {
                                 Value::String(s) => s,
-                                _ => panic!("[IP {:04}] Expected module name string on stack, got {:?}", ip, target_val),
+                                _ => return Self::runtime_error(format!("[IP {:04}] Expected module name string on stack, got {:?}", ip, target_val)),
                             };
 
                             // Look up the imported module
@@ -837,10 +839,10 @@ impl VirtualMachine {
                                     self.stack.push(Value::Coroutine(Rc::new(RefCell::new(instance))));
                                 } 
                                 else {
-                                    panic!(
+                                    return Self::runtime_error(format!(
                                         "[IP {:04}] Member '{}' not found in imported module '{}'",
                                         ip, operand.member_name, module_name
-                                    );
+                                    ));
                                 }
                             } else {
                                 panic!("[IP {:04}] Module '{}' not found", ip, module_name);
@@ -852,7 +854,7 @@ impl VirtualMachine {
                             let target_val = self.stack.pop().unwrap_or(Value::Nil);
                             let enum_struct = match target_val {
                                 Value::EnumDefinition(e) => e,
-                                _ => panic!("[IP {:04}] Expected EnumDefinition on stack for enum member access, got {:?}", ip, target_val),
+                                _ => return Self::runtime_error(format!("[IP {:04}] Expected EnumDefinition on stack for enum member access, got {:?}", ip, target_val)),
                             };
 
                             // Look up the specific member (e.g., "North") inside the enum
@@ -863,7 +865,7 @@ impl VirtualMachine {
                                 self.stack.push(Value::EnumMember(member_value));
                             }
                             else {
-                                panic!("[IP {:04}] No member found for enum '{}' by the name '{}'", ip, enum_struct.identifier, operand.member_name)
+                                return Self::runtime_error(format!("[IP {:04}] No member found for enum '{}' by the name '{}'", ip, enum_struct.identifier, operand.member_name))
                             }
                         }
 
@@ -872,22 +874,24 @@ impl VirtualMachine {
                             // Get the parent. It MUST be an EnumMember... for obvious reasons
                             let parent = match target_val {
                                 Value::EnumMember(m) => m,
-                                _ => panic!("[IP {:04}] Expected an enum member on the stack, got {:?}", ip, target_val),
+                                _ => return Self::runtime_error(format!("[IP {:04}] Expected an enum member on the stack, got {:?}", ip, target_val)),
                             };
 
                             // Now get the sub-member
-                            let child = self.find_sub_member(&parent, &operand.member_name)
-                                .unwrap_or_else(|| panic!(
+                            let proto = self.find_sub_member(&parent, &operand.member_name);
+                            if let Some(child) = proto {
+                                // Push!!!
+                                self.stack.push(Value::EnumMember(child));
+                            } else {
+                                return Self::runtime_error(format!(
                                     "[IP {:04}] '{}' has no sub member '{}'",
                                     ip, parent.full_name(), operand.member_name
-                                ));
-
-                            // Push!!!
-                            self.stack.push(Value::EnumMember(child));
+                                ))
+                            }
                         }
 
                         MemberAccessType::None => {
-                            panic!("[IP {:04}] Unknown member access type: '{:?}'", ip, operand.access_type);
+                            return Self::runtime_error(format!("[IP {:04}] Unknown member access type: '{:?}'", ip, operand.access_type));
                         }
                     }
                 }
@@ -914,7 +918,32 @@ impl VirtualMachine {
                         self.scopes.pop();
                     } else {
                         // Error for the global scope
-                        eprintln!("[IP {:04}] Attempted to exit global scope!", ip);
+                        return Self::runtime_error(format!("[IP {:04}] Attempted to exit global scope!", ip));
+                    }
+                }
+
+                Op::Permute(order) => {
+                    // Finds the values to be permuted (values ahead of the stack.len() - order.len())
+                    let proto = self.stack.len().checked_sub(order.len());
+                    if let Some(base) = proto {
+                        // From the base onwards (to the end of the stack), collect
+                        let pushed: Vec<Value> = self.stack.drain(base..).collect();
+                        for &source in order {
+                            // Andddd Push!
+                            self.stack.push(pushed[source].clone());
+                        }
+                        /*
+                            This is still a really complex way to understand param orders but basically...
+                            Say we have a task called foo() that recieves (a, b)
+                            If we call foo(b = 2, 1), then the system naturally pushes
+                            2 then 1, but 'b' is supposed to come after 'a'!
+                            Permute here helps by emitting the order of the params, for example
+                            here it would output [1, 0] where 1 signifies the VM that this argument is
+                            for param no. 1 (aka 'b' since this is base 0)
+                        */
+                    }
+                    else {
+                        return Self::runtime_error(format!("[IP {:04}] Permute needs enough values on the stack", ip))
                     }
                 }
 
@@ -960,12 +989,17 @@ impl VirtualMachine {
                         And THAT variable does not have shadowing allows, then this fails!
                     */ 
                     if let Some(found) = existing && !found.modifiers.open {
-                        panic!("Cannot redeclare a variable! Modify the original variable to be open if needed.")
+                        return Self::runtime_error(format!("[IP {:04}] Cannot redeclare a variable! Modify the original variable to be open if needed.", ip))
                     }
 
-                    let current_scope = Arc::make_mut(self.scopes.last_mut().expect("Scopes stack is empty!"));
-
-                    current_scope.insert(var_info.name.clone(), entry);
+                    let proto_current_scope = self.scopes.last_mut();
+                    if let Some(mut current_scope) = proto_current_scope {
+                        let current_scope = Arc::make_mut(&mut current_scope);
+                        current_scope.insert(var_info.name.clone(), entry);
+                    }
+                    else {
+                        return Self::runtime_error(format!("[IP {:04}] Scopes stack is empty", ip));
+                    }
                 }
 
                 Op::TemporaryStore(operand) => {
@@ -977,7 +1011,7 @@ impl VirtualMachine {
                         self.temporaries.insert(slot, val.clone());
                     }
                     else {
-                        panic!("[IP {:04}] No value found to store in temporaries.", ip);
+                        return Self::runtime_error(format!("[IP {:04}] No value found to store in temporaries.", ip));
                     }
                 }
                 
@@ -1048,7 +1082,7 @@ impl VirtualMachine {
 
                             self.stack.push(enum_value);
                         } else {
-                            panic!("[IP {:04}] Variable or Enum '{}' is not defined in any active scope.", ip, name);
+                            return Self::runtime_error(format!("[IP {:04}] Variable or Enum '{}' is not defined in any active scope.", ip, name));
                         }
 
                     }
@@ -1062,7 +1096,7 @@ impl VirtualMachine {
                         // Push as a CLONE
                         self.stack.push(obj.clone());
                     } else {
-                        panic!("[IP {:04}] Attempted to load undefined temporary object of slot {}.", ip, slot)
+                        return Self::runtime_error(format!("[IP {:04}] Attempted to load undefined temporary object of slot {}.", ip, slot))
                     }
                 }
 
@@ -1080,7 +1114,7 @@ impl VirtualMachine {
 
                             // A fixed variable? Gotta fix this one!
                             if entry.modifiers.fixed {
-                                panic!("Cannot modify a fixed variable")
+                                return Self::runtime_error(format!("[IP {:04}] Cannot modify a fixed variable", ip))
                             }
 
                             // Type safety
@@ -1123,7 +1157,7 @@ impl VirtualMachine {
                     }
 
                     if !updated {
-                        panic!("[IP {:04}] Cannot update undefined variable '{}'", ip, var_info.name);
+                        return Self::runtime_error(format!("[IP {:04}] Cannot update undefined variable '{}'", ip, var_info.name));
                     }
 
                     // Check em trackers like some kind of dog collar!
@@ -1152,20 +1186,24 @@ impl VirtualMachine {
                     match (self.stack.pop(), self.stack.pop(), self.stack.pop()) {
                         (Some(value), Some(index), Some(target)) => {
                             let observed_target = target.clone();
-                            let updated_target = VirtualMachine::eval_update_indexing(index, target, value, operand.operation)
-                                                            .expect("Evaluation of updating an index expected an error.");
+                            let proto_updated_target = VirtualMachine::eval_update_indexing(index, target, value, operand.operation);
 
-                            // Keep in mind that indexing only applies to collections, so we just run this!
-                            self.notify_collection_changed(&observed_target);
-                                                        
-                            if let Some(target_name) = operand.target_name.clone() {
-                                self.update_variable_value(target_name, updated_target);
+                            if let Ok(updated_target) = proto_updated_target {
+                                // Keep in mind that indexing only applies to collections, so we just run this!
+                                self.notify_collection_changed(&observed_target);
+                                                            
+                                if let Some(target_name) = operand.target_name.clone() {
+                                    self.update_variable_value(target_name, updated_target);
+                                }
+                            }
+                            else {
+                                return Self::runtime_error(format!("[IP {:04}] Evaluation of updating an index expected an error.", ip))
                             }
                         }
 
                         // Ensures only when all three are present, it will continue
                         _ => {
-                            println!("[IP {:04}] Not enough items in stack whilst updating an index", ip);
+                            return Self::runtime_error(format!("[IP {:04}] Not enough items in stack whilst updating an index. This is an issue on the Compilers part", ip));
                         }
                     }
                 }
@@ -1174,7 +1212,7 @@ impl VirtualMachine {
                     // Attempt to get the temporary index slot
                     let index = match self.temporaries.get(&operand.index_slot) {
                         Some(Value::Integer(i)) => *i as usize,
-                        _ => panic!("Foreach index was not initialized"),
+                        _ => return Self::runtime_error(format!("[IP {:04}] Foreach index was not initialized", ip)),
                     };
 
                     // In the collection slot (where the iterable is), attempt to borrow it's count and get the item from the current index (the start)
@@ -1187,7 +1225,7 @@ impl VirtualMachine {
                         Some(Value::Dictionary(dictionary)) => {
                             let dictionary = dictionary.borrow();
                             if dictionary.keys.len() != dictionary.values.len() {
-                                panic!("Key/Value count mismatch in dictionary iteration.");
+                                return Self::runtime_error(format!("[IP {:04}] Key/Value count mismatch in dictionary iteration.", ip));
                             }
                             
                             // This *simply* gets all the keys and values, and maps them into a list of key-value pairs!
@@ -1204,7 +1242,7 @@ impl VirtualMachine {
                             (str.chars().count(), Some(Value::String(char_found.to_string())))
                         }
 
-                        _ => panic!("Can only iterate over an iterable collection"),
+                        _ => return Self::runtime_error(format!("[IP {:04}] Can only iterate over an iterable collection", ip)),
                     };
 
                     if index >= item_count {
@@ -1212,7 +1250,12 @@ impl VirtualMachine {
                         self.stack.push(Value::Boolean(false));
                     } else {
                         // Erring is more useful than unwrapping a default
-                        let current_item = current_item.expect("Foreach item should exist for an in-range index");
+                        let proto_current_item = current_item;
+
+                        let current_item = match proto_current_item {
+                            Some(v) => v,
+                            None => return Self::runtime_error(format!("[IP {:04}] Foreach item should exist for an in-range index", ip))
+                        };
 
                         // --- MULTI-VARIABLE UNPACKING ---
                         // We go through each declaration item
@@ -1239,9 +1282,11 @@ impl VirtualMachine {
                                 }
                             }
 
-                            let scope_idx = var_scope_idx.unwrap_or_else(|| {
-                                panic!("Variable was not defined yet: {}", var_name)
-                            });
+                            let proto_scope_idx = var_scope_idx;
+                            let scope_idx = match proto_scope_idx {
+                                Some(s) => s,
+                                None => return Self::runtime_error(format!("[IP {:04}] Variable was not defined yet: {}", ip, var_name))
+                            };
 
                             let mut_scope = Arc::make_mut(&mut self.scopes[scope_idx]);
 
@@ -1374,7 +1419,7 @@ impl VirtualMachine {
                             Value::Float(fl) => self.stack.push(Value::Float(-fl)),
                             Value::Integer(int) => self.stack.push(Value::Integer(-int)),
 
-                            _ => panic!("Can only perform negation on integers and floats")
+                            _ => return Self::runtime_error(format!("[IP {:04}]] Can only perform negation on integers and floats", ip))
                         }
                     }
                 }
@@ -1418,7 +1463,9 @@ impl VirtualMachine {
                         // Using it's metadata, we ensure the number of arguments is equal to the lambdas parameter count (arity)
                         let definition = &lambda.definition;
                         if call.argument_count != definition.arity {
-                            panic!("Lambda '{}' expects {} arguments, but {} were provided", call.name, definition.arity, call.argument_count);
+                            return Self::runtime_error(
+                                format!("[IP {:04}] Lambda '{}' expects {} arguments, but {} were provided", ip, call.name, definition.arity, call.argument_count)
+                            );
                         }
 
                         // Get the arguments
@@ -1433,12 +1480,12 @@ impl VirtualMachine {
                             definition.parameters.clone()
                         }
                         else {
-                            panic!("Lambda '{}' must provide parameter names for its arity", call.name);
+                           return Self::runtime_error(format!("[IP {:04}] Lambda '{}' must provide parameter names for its arity", ip, call.name));
                         };
 
                         // Check!
                         if parameter_names.len() != arguments.len() {
-                            panic!("Could not determine parameter names for lambda '{}'", call.name);
+                            return Self::runtime_error(format!("[IP {:04}] Could not determine parameter names for lambda '{}'", ip, call.name));
                         }
 
                         let mut parameters: HashMap<String, VariableEntry> = HashMap::new();
@@ -1550,22 +1597,31 @@ impl VirtualMachine {
                 */
                 Op::CallNativeForward(call) => {
                     // The wrapper's own frame knows what the declared parameters are
-                    let parameters = self.call_stack.last()
+                    let proto_parameters = self.call_stack.last()
                         // Get the task info
                         .and_then(|frame| frame.task_info.as_ref())
                         // Map into params
                         .map(|task| task.parameters.clone())
-                        // Msg for error
-                        .expect("CallNativeForward can only run inside a native task wrapper");
+                    ;
+
+                    let parameters = match proto_parameters {
+                        Some(p) => p,
+                        None => return Self::runtime_error(format!("[IP {:04}] CallNativeForward can only run inside a native task wrapper", ip))
+                    };
 
                     // (value, came from an optional parameter?)
                     let mut forwarded: Vec<(Value, bool)> = Vec::new();
 
                     for parameter in &parameters {
                         // As simple as PI
-                        let value = self.lookup_variable(&parameter.name)
+                        let proto_value = self.lookup_variable(&parameter.name)
                             .map(|entry| entry.value.borrow().clone())
-                            .unwrap_or_else(|| panic!("Native wrapper parameter '{}' is not defined", parameter.name));
+                        ;
+
+                        let value = match proto_value {
+                            Some(v) => v,
+                            None => return Self::runtime_error(format!("[IP {:04}] Native wrapper parameter '{}' is not defined", ip, parameter.name))
+                        };
 
                         match &parameter.parameter_kind {
                             ParamKind::Required(_) => forwarded.push((value, false)),
@@ -1574,7 +1630,7 @@ impl VirtualMachine {
                             // Spread the list back out into individual arguments
                             ParamKind::Variadic(_) => {
                                 let Value::List(list) = value else {
-                                    panic!("Variadic parameter '{}' should hold a list", parameter.name);
+                                    return Self::runtime_error(format!("[IP {:04}] Variadic parameter '{}' should hold a list", ip, parameter.name));
                                 };
 
                                 for item in list.borrow().items.iter() {
@@ -1689,26 +1745,28 @@ impl VirtualMachine {
                         self.yield_task(yielded_value, &mut ip, &mut active_instructions, &coroutine);
                         continue;
                     } else {
-                        panic!("[IP {:04}] Can only call Yield inside a running coroutine.", ip);
+                        return Self::runtime_error(format!("[IP {:04}] Can only call Yield inside a running coroutine.", ip));
                     }
                 }
 
                 Op::Throw(message) => {
-                    panic!("{}", message);
+                    return Self::runtime_error(format!("{}", message));
                 }
             }
 
             ip += 1; // To next instruction
         }
 
-        if print_completion {
-            println!("Execution complete");
-        }
+        Ok(())
     }
 
     /// Loads the `VirtualMachine` modules with the given modules Hashmap
     pub fn load_program(&mut self, modules: HashMap<String, Bytecode>) {
         self.modules = Arc::new(modules);
+    }
+
+    pub fn runtime_error(message: impl Into<String>) -> Result<(), MaxError> {
+        Err(MaxError::Runtime(message.into()))
     }
 
     /*
@@ -2109,7 +2167,7 @@ impl VirtualMachine {
         // Set prev instructions to the current active instructions!
         let previous_active_instructions = Arc::clone(&self.active_instructions);
         // Run it (btw no print completion so that the 'Execution complete' print statement doesn't run)
-        self.run_chunk(self.module_name.clone(), nested_bytecode, false);
+        self.run_chunk(self.module_name.clone(), nested_bytecode).expect("Error running lambda.");
         // And now we reassign the previous active instructions back :)
         self.active_instructions = previous_active_instructions;
 
