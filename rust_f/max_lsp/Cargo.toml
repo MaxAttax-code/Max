@@ -1,0 +1,11 @@
+[package]
+name = "max_lsp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+max_compiler = { path = "../max_compiler" }
+max_runtime = { path = "../max_runtime" }
+max_bytecode = { path = ".." }
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "sync"] }
