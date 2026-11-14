@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 max_bytecode = { path = ".." }
+dunce = "1.0.5"
