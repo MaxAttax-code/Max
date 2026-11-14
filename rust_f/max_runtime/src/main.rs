@@ -2,12 +2,10 @@
 
 // ----- IMPORT CREATED CRATES -----\\
 
-mod natives;
-
-pub mod vm;
+// Rather than compiling twice using 'mod', simply use them from the lib.rs itself
+use max_runtime::{natives, vm::VirtualMachine};
 use std::path::PathBuf;
 
-use crate::vm::{VirtualMachine};
 use max_compiler::{compiler::NativeNames, project::compile_project};
 
 // ------ \\
@@ -43,12 +41,24 @@ fn main() {
         global_tasks: registry.global_task_names(),
     };
 
-    let program = match compile_project(&project_dir.join("src"), &project_dir.join("library"), native_names) {
-        Ok(program) => program,
+    let analysis = match compile_project(&project_dir.join("src"), &project_dir.join("library"), native_names) {
+        Ok(analysis) => analysis,
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
         }
+    };
+
+    for (path, diagnostics) in &analysis.diagnostics {
+        for diagnostic in diagnostics {
+            eprintln!("{}: {diagnostic}", path.display());
+        }
+    }
+
+    let Some(program) = analysis.program else {
+        // Just exit (DO NOT PANIC! Just keep calm and commit suicide!)
+        eprintln!("Compilation failed; program was not loaded.");
+        std::process::exit(1);
     };
 
     let mut vm = VirtualMachine::new();
