@@ -1,28 +1,39 @@
 use crate::{
     ast::*,
-    error::MaxError,
+    error::{MaxDiagnostic, Severity},
     token::{Token, TokenKind as K},
 };
+use crate::naming::Casing;
 
 /// Our glorious parser to convert lexer tokens into statements or expressions.
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    diagnostics: Vec<MaxDiagnostic>
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0 }
+        Parser { tokens, pos: 0, diagnostics: Vec::new() }
     }
 
     /// All statements (expressions can't be standalon, with the exception of the ExpressionStatement)
-    pub fn parse(mut self) -> Result<Vec<Statement>, MaxError> {
+    pub fn parse(mut self) -> (Vec<Statement>, Vec<MaxDiagnostic>) {
         let mut statements = Vec::new();
         while self.pos < self.tokens.len() {
-            statements.push(self.parse_statement()?);
+            let start = self.pos;
+            match self.parse_statement() {
+                Ok(s) => statements.push(s),
+                Err(d) => {
+                    self.diagnostics.push(d);
+                    // Always synchronise and prevent infinite loops
+                    if self.pos == start { self.pos += 1; }
+                    self.synchronise(&[]);
+                }
+            }
         }
-
-        Ok(statements)
+        // Ensure we return both
+        (statements, self.diagnostics)
     }
 
     // ---------------------------- //
@@ -31,6 +42,21 @@ impl Parser {
 
     fn current(&self) -> Option<&Token> {
         self.tokens.get(self.pos)
+    }
+
+    fn eof_error(&self) -> MaxDiagnostic {
+        let span = self.tokens.last().map(|t| t.span).unwrap_or_default();
+        span.error("unexpected-eof", "Unexpected end of file.")
+    }
+
+    fn current_safe(&self) -> Result<&Token, MaxDiagnostic> {
+        self.current().ok_or_else(|| self.eof_error())
+    }
+
+    fn consume(&mut self) -> Result<Token, MaxDiagnostic> {
+        let token = self.current_safe()?.clone();
+        self.pos += 1;
+        Ok(token)
     }
 
     /// The kind `offset` tokens ahead. An offset of 0 is the current token
@@ -43,6 +69,39 @@ impl Parser {
         self.peek_kind(0) == Some(kind)
     }
 
+    /**
+    Checks the current token kind against the given Kind, **without** consuming.
+    If the kind matches, then return a `MaxDiagnostic` Error with the given code and message.\
+    Use this to give informative messages on what should not be in the code. Note that since
+    this returns the diagnostic, the parser will stop, assuming it's an error
+    */
+    fn forbid(&self, kind: K, code: &'static str, message: impl Into<String>) -> Result<(), MaxDiagnostic> {
+        match self.current_safe() {
+            Ok(t) if t.kind == kind => Err(t.span.error(code, message)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Record an error of the current token if it matches, skip the token, and keep going.
+    /// This also returns whether the token matched or not
+    fn reject(&mut self, kind: K, code: &'static str, message: impl Into<String>) -> bool {
+        if !self.check(kind) { return false; }
+
+        let span = self.tokens[self.pos].span;
+        self.diagnostics.push(span.error(code, message));
+        self.pos += 1;
+        true
+    }
+
+    /// Record a warning, and leave the token for normal parsing
+    fn warn_on(&mut self, kind: K, code: &'static str, message: impl Into<String>) -> bool {
+        if !self.check(kind) { return false; }
+
+        let span = self.tokens[self.pos].span;
+        self.diagnostics.push(span.warning(code, message));
+        true
+    }
+
     /// Consumes the current token if it has the given kind, returning if it was successful or not as a bool
     fn eat(&mut self, kind: K) -> bool {
         if self.check(kind) {
@@ -53,38 +112,38 @@ impl Parser {
         }
     }
 
-    fn consume(&mut self) -> Result<Token, MaxError> {
-        let token = self
-            .tokens
-            .get(self.pos)
-            .cloned()
-            .ok_or_else(|| MaxError::EndOfFile(String::from("Unexpected end of file.")))?;
-        self.pos += 1;
-        Ok(token)
-    }
-
     /// This returns the current token, checking it's kind. This also consumes the current token, moving up one token into the Parser.
-    fn expect(&mut self, kind: K) -> Result<Token, MaxError> {
+    fn expect<T>(&mut self, kind: K, message: Option<T>) -> Result<Token, MaxDiagnostic>
+        where T: Into<String>
+    {
         let token = self.consume()?;
+        let msg = message.map(|m| m.into()).unwrap_or(format!("Expected {:?}, got '{}'", kind, token.value));
         if token.kind != kind {
-            return Err(Self::error_at(
-                &token,
-                format!("Expected {:?}, got '{}'", kind, token.value),
+            return Err(token.span.error(
+                "unexpected-token",
+                msg,
             ));
         }
         Ok(token)
     }
 
-    /// A simple Syntax Error message at the pointed token
-    fn error_at(token: &Token, message: impl Into<String>) -> MaxError {
-        MaxError::Syntax { message: message.into(), line: token.line, column: token.column }
+    /// Expects a conclude statement specifically. All errors caused by this have the same code.
+    fn expect_conclusion(&mut self, message: impl Into<String>) -> Result<Token, MaxDiagnostic> {
+        let token = self.consume()?;
+        if token.kind != K::ConcludeStatement {
+            return Err(token.span.error(
+                "expected-conclude",
+                message.into(),
+            ));
+        }
+        Ok(token)
     }
 
     /// An error pointing at the current token, or the last one when the file has ended
-    fn error_here(&self, message: impl Into<String>) -> MaxError {
+    fn error_here(&self, code: &'static str, message: impl Into<String>) -> MaxDiagnostic {
         match self.tokens.get(self.pos).or_else(|| self.tokens.last()) {
-            Some(token) => Self::error_at(token, message),
-            None => MaxError::Syntax { message: message.into(), line: 1, column: 1 },
+            Some(token) => token.span.error(code, message),
+            None => MaxDiagnostic::new(Severity::Error, code, message.into(), Span::new(0, 0, 0, 0)),
         }
     }
 
@@ -92,7 +151,7 @@ impl Parser {
     fn is_contextual_keyword(kind: K) -> bool {
         matches!(
             kind,
-            K::Declare | K::Resort | K::Say | K::Define | K::TaskType | K::Boolean | K::IfBegin
+            K::Decl | K::Resort | K::Say | K::Def | K::TaskType | K::Boolean | K::IfBegin
                 | K::Then | K::Elif | K::Else | K::Maybe | K::ConcludeStatement | K::Return
                 | K::Yield | K::While | K::For | K::Foreach | K::Do | K::Nil | K::As | K::Not
                 | K::And | K::Or | K::To | K::Step | K::Of | K::In | K::With
@@ -101,16 +160,45 @@ impl Parser {
         )
     }
 
+    /// Words that are used to start statements
+    fn is_statement_starter(kind: K) -> bool {
+        matches!(
+            kind,
+            K::Decl | K::Say | K::Def | K::IfBegin | K::Then
+            | K::Elif | K::Else | K::Maybe | K::While | K::For
+            | K::Foreach | K::Using | K::Enum | K::Match | K::Return
+            | K::Yield | K::Break | K::Skip | K::Emit
+        )
+    }
+
     /// Parses statements until one of the `stops` is the current token. The stop is not consumed.
-    fn parse_block(&mut self, stops: &[K]) -> Result<Vec<Statement>, MaxError> {
-        let mut body: Vec<Statement> = Vec::new();
-        while let Some(token) = self.current() {
-            if stops.contains(&token.kind) {
-                return Ok(body);
+    /// The opener span given is used to provide the diagnostic error position
+    fn parse_block(&mut self, stops: &[K], opener: Span) -> Result<Vec<Statement>, MaxDiagnostic> {
+        let mut body = Vec::new();
+        while let Some(kind) = self.peek_kind(0) {
+            if stops.contains(&kind) { return Ok(body); }
+
+            let start = self.pos;
+            match self.parse_statement() {
+                Ok(statement) => body.push(statement),
+                Err(diagnostic) => {
+                    self.diagnostics.push(diagnostic);
+                    if self.pos == start { self.pos += 1; }   // always make progress
+                    self.synchronise(stops);
+                }
             }
-            body.push(self.parse_statement()?);
         }
-        Err(MaxError::EndOfFile(String::from("Expected 'conclude' before the end of the file.")))
+        Err(opener.error("missing-conclude", "This block is never closed; add a 'conclude'"))
+    }
+
+    /// Continues to move the parser up as long as the consumed token is not of the given `stops`
+    /// or a statement starter (see in [`parser`][`Parser`] -> [`is_statement_starter`]).\
+    /// Use this to synchronise a block back to it's original place if returns a diagnostic
+    fn synchronise(&mut self, stops: &[K]) {
+        while let Some(kind) = self.peek_kind(0) {
+            if stops.contains(&kind) || Self::is_statement_starter(kind) { break; }
+            self.pos += 1;
+        }
     }
 
     /// True where a bare `return` or `yield` has no value to parse
@@ -131,11 +219,11 @@ impl Parser {
     // In order of our Operations System, starting with Unary and moving to Binary
     //   or -> and -> comparison -> + - -> * / % -> not -> factor
 
-    fn parse_expression(&mut self) -> Result<Expression, MaxError> {
+    fn parse_expression(&mut self) -> Result<Expression, MaxDiagnostic> {
         self.parse_or()
     }
 
-    fn parse_or(&mut self) -> Result<Expression, MaxError> {
+    fn parse_or(&mut self) -> Result<Expression, MaxDiagnostic> {
         let mut left = self.parse_and()?;
         while self.eat(K::Or) {
             let right = self.parse_and()?;
@@ -146,7 +234,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_and(&mut self) -> Result<Expression, MaxError> {
+    fn parse_and(&mut self) -> Result<Expression, MaxDiagnostic> {
         let mut left = self.parse_comparison()?;
         while self.eat(K::And) {
             let right = self.parse_comparison()?;
@@ -157,7 +245,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_comparison(&mut self) -> Result<Expression, MaxError> {
+    fn parse_comparison(&mut self) -> Result<Expression, MaxDiagnostic> {
         let mut left = self.parse_additive()?;
         while let Some(op) = self.peek_kind(0).and_then(Self::comparison_op) {
             // Yonder and beyond our comparison operand!
@@ -186,7 +274,7 @@ impl Parser {
     }
 
     /// This first calls `parse_term`
-    fn parse_additive(&mut self) -> Result<Expression, MaxError> {
+    fn parse_additive(&mut self) -> Result<Expression, MaxDiagnostic> {
         let mut left = self.parse_term()?;
         loop {
             let op = match self.peek_kind(0) {
@@ -203,7 +291,7 @@ impl Parser {
     }
 
     /// This first calls `parse_unary`
-    fn parse_term(&mut self) -> Result<Expression, MaxError> {
+    fn parse_term(&mut self) -> Result<Expression, MaxDiagnostic> {
         let mut left = self.parse_unary()?;
         loop {
             let op = match self.peek_kind(0) {
@@ -221,7 +309,7 @@ impl Parser {
     }
 
     /// After consuming the 'not', this calls `parse_expression`, otherwise `parse_factor`
-    fn parse_unary(&mut self) -> Result<Expression, MaxError> {
+    fn parse_unary(&mut self) -> Result<Expression, MaxDiagnostic> {
         if self.eat(K::Not) {
             let operand = self.parse_comparison()?;
             let span = operand.span.clone();
@@ -232,24 +320,24 @@ impl Parser {
 
     /// This consumes the current token, returning an Expression based on the Token kind.
     /// This performs `parse_postfix` on most branches.
-    fn parse_factor(&mut self) -> Result<Expression, MaxError> {
+    fn parse_factor(&mut self) -> Result<Expression, MaxDiagnostic> {
         let token = self.consume()?;
 
-        let span: Span = Span::from(&token);
+        let span: Span = token.span;
 
         match token.kind {
             K::Nil => self.parse_postfix(Expression::new(ExpressionKind::Nil, span)),
 
             K::Integer => {
                 let value = token.value.parse::<i64>().map_err(|_| {
-                    Self::error_at(&token, format!("Integer literal '{}' is out of range", token.value))
+                    token.span.error("invalid-integer-literal", format!("Integer literal '{}' is out of range", token.value))
                 })?;
                 self.parse_postfix(Expression::new(ExpressionKind::Integer(value), span))
             }
 
             K::Float => {
                 let value = token.value.parse::<f64>().map_err(|_| {
-                    Self::error_at(&token, format!("Invalid float literal '{}'", token.value))
+                    token.span.error("invalid-float-literal", format!("Float literal '{}' is out of range", token.value))
                 })?;
                 self.parse_postfix(Expression::new(ExpressionKind::Float(value), span))
             }
@@ -268,7 +356,7 @@ impl Parser {
                     "true" => Expression::new(ExpressionKind::Boolean(true), span),
                     "false" => Expression::new(ExpressionKind::Boolean(false), span),
                     "possible" => Expression::new(ExpressionKind::Possible, span),
-                    other => return Err(Self::error_at(&token, format!("Unknown boolean value: {other}"))),
+                    other => return Err(token.span.error("unknown-boolean", format!("Unknown boolean value: {other}"))),
                 };
                 self.parse_postfix(literal)
             }
@@ -282,7 +370,7 @@ impl Parser {
                 }
                 let inner = self.parse_expression()?;
 
-                self.expect(K::RightParenthesis)?;
+                self.expect(K::RightParenthesis, Some("Expected a right parenthesis to close a left parenthesis"))?;
                 self.parse_postfix(inner)
             }
 
@@ -296,12 +384,12 @@ impl Parser {
                 self.parse_postfix(dictionary)
             }
 
-            _ => Err(Self::error_at(&token, format!("Expected an expression, got '{}'", token.value))),
+            _ => Err(token.span.error("factor-error", format!("Expected an expression, got '{}'", token.value))),
         }
     }
 
     /// Handles `.member`, `[index]` and `(arguments)` chains after any expression
-    fn parse_postfix(&mut self, mut expression: Expression) -> Result<Expression, MaxError> {
+    fn parse_postfix(&mut self, mut expression: Expression) -> Result<Expression, MaxDiagnostic> {
         let span: Span = expression.span.clone();
 
         loop {
@@ -317,7 +405,7 @@ impl Parser {
                 Some(K::LeftBracket) => {
                     self.pos += 1;
                     let index = self.parse_expression()?;
-                    self.expect(K::RightBracket)?;
+                    self.expect(K::RightBracket, Some("Expected a right bracket to close a left bracket"))?;
                     expression = Expression::new(ExpressionKind::Index { target: Box::new(expression), index: Box::new(index) }, span);
                 }
                 
@@ -333,13 +421,13 @@ impl Parser {
 
     /// Consumes a member name by ensuring it is a valid contextual keyword (see `is_contextual_keyword()`),
     /// otherwise erring
-    fn consume_member_name(&mut self) -> Result<String, MaxError> {
+    fn consume_member_name(&mut self) -> Result<String, MaxDiagnostic> {
         let token = self.consume()?;
         if token.kind == K::Identifier || Self::is_contextual_keyword(token.kind) {
             Ok(token.value)
         } else {
-            Err(Self::error_at(
-                &token,
+            Err(token.span.error(
+                "missing-member-identifier",
                 format!("Expected member identifier after '.', got '{}'", token.value),
             ))
         }
@@ -359,12 +447,10 @@ impl Parser {
     The parser deliberately does NOT check the names. It cannot know the callee's
     parameters, so everything is checked later in `bind_arguments`.
     */
-    fn parse_task_call(&mut self, callee: Expression) -> Result<Expression, MaxError> {
-        self.expect(K::LeftParenthesis)?;
+    fn parse_task_call(&mut self, callee: Expression) -> Result<Expression, MaxDiagnostic> {
+        self.expect::<&str>(K::LeftParenthesis, None)?;
 
-        let span: Span = Span::from(self.current()
-            .unwrap_or_else(|| panic!("Error from attempting to get span during task call"))
-        );
+        let span: Span = self.current_safe()?.span;
 
         // Each arg is assigned to it's name
         let mut arguments: Vec<Argument> = Vec::new();
@@ -375,7 +461,7 @@ impl Parser {
                     let token = self.consume()?;
                     self.pos += 1; // the '='
 
-                    Some(Spanned { span: Span::from(&token), node: token.value })
+                    Some(Spanned { span: token.span, node: token.value })
                 } else {
                     None
                 };
@@ -386,7 +472,7 @@ impl Parser {
                 if !self.eat(K::Comma) { break; }
             }
         }
-        self.expect(K::RightParenthesis)?;
+        self.expect(K::RightParenthesis, Some("Expected a right parenthesis to close a left parenthesis"))?;
 
         Ok(Expression::new(ExpressionKind::Call { callee: Box::new(callee), arguments }, span))
     }
@@ -396,10 +482,8 @@ impl Parser {
     // ---------------------------- //
 
     /// The opening '[' is already consumed. A trailing comma is allowed.
-    fn parse_list(&mut self) -> Result<Expression, MaxError> {
-        let span: Span = Span::from(self.current()
-            .unwrap_or_else(|| panic!("Error occurred when attempting to create Span during `parse_list`"))
-        );
+    fn parse_list(&mut self) -> Result<Expression, MaxDiagnostic> {
+        let span: Span = self.current_safe()?.span;
 
         let mut items = Vec::new();
         while !self.check(K::RightBracket) {
@@ -408,20 +492,18 @@ impl Parser {
                 break;
             }
         }
-        self.expect(K::RightBracket)?;
+        self.expect(K::RightBracket, Some("Expected a right bracket to close a left bracket"))?;
         Ok(Expression::new(ExpressionKind::List(items), span))
     }
 
     /// The opening '{' is already consumed
-    fn parse_dictionary(&mut self) -> Result<Expression, MaxError> {
-        let span: Span = Span::from(self.current()
-            .unwrap_or_else(|| panic!("Error occurred when attempting to create Span during `parse_list`"))
-        );
+    fn parse_dictionary(&mut self) -> Result<Expression, MaxDiagnostic> {
+        let span: Span = self.current_safe()?.span;
         
         let mut entries = Vec::new();
         while !self.check(K::RightCurlyBracket) {
             let key = self.parse_expression()?;
-            self.expect(K::Colon)?; // Colon to seperate key : value
+            self.expect(K::Colon, Some("A key-value pair in a dictionary must be seperated by a colon ':'"))?; // Colon to seperate key : value
 
             let value = self.parse_expression()?;
             entries.push((key, value));
@@ -430,7 +512,7 @@ impl Parser {
                 break;
             }
         }
-        self.expect(K::RightCurlyBracket)?;
+        self.expect(K::RightCurlyBracket, Some("Expected a right curly-bracket to close a left curly-bracket"))?;
         Ok(Expression::new(ExpressionKind::Dictionary(entries), span))
     }
 
@@ -457,27 +539,39 @@ impl Parser {
     }
 
     /// The '(' is already consumed
-    fn parse_lambda(&mut self) -> Result<Expression, MaxError> {
+    fn parse_lambda(&mut self) -> Result<Expression, MaxDiagnostic> {
         // Get our span here, right now at the beginning
-        let span: Span = Span::from(self.current()
-            .unwrap_or_else(|| panic!("Error occurred when attempting to create Span during `parse_list`"))
-        );
+        let span: Span = self.current_safe()?.span;
 
         let mut parameters = Vec::new();
         if !self.check(K::RightParenthesis) {
             loop {
-                parameters.push(self.expect(K::Identifier)?.value);
+                let token = self.expect(K::Identifier, Some("A parameter name is always expected after a comma"))?;
+                let span = token.span;
+                let name = Spanned { node: token.value, span};
+                // Param types are NOT supported in lambdas!
+                let kind: ParameterKind = ParameterKind::Required;
+
+                // Provide diagnostics on them these for info
+                self.reject(K::QuestionMark, "optional-lambda-parameter", "A lambda parameter can not be optional");
+                self.reject(K::Ellipsis, "variadic-lambda-parameter", "A lambda parameter can not be variadic");
+
+                // Allow 'as' for type specification
+                let type_ref = if self.eat(K::As) { Some(self.parse_span_type()?) } else { None };
+
+                parameters.push(Parameter { type_ref, name, kind });
+
                 if !self.eat(K::Comma) {
                     break;
                 }
             }
         }
-        self.expect(K::RightParenthesis)?;
-        self.expect(K::EvaluateTo)?;
+        self.expect(K::RightParenthesis, Some("Lambda parameters are ended by a right bracket"))?;
+        self.expect(K::EvaluateTo, Some("Lambda bodies are started by '=>'"))?;
 
         let body = if self.eat(K::Do) {
-            let statements: Vec<Statement> = self.parse_block(&[K::ConcludeStatement])?;
-            self.expect(K::ConcludeStatement)?;
+            let statements: Vec<Statement> = self.parse_block(&[K::ConcludeStatement], span)?;
+            self.expect_conclusion("A Lambda block body must be ended by `conclude`")?;
             LambdaBody::Block(statements)
         } else {
             LambdaBody::Expression(Box::new(self.parse_expression()?))
@@ -492,8 +586,8 @@ impl Parser {
 
     /// Parses a type from an identifier token. If it is not a valid Maxtype, it is assumed an enum type.
     /// Ensuring that the type name exists is done later
-    fn parse_type(&mut self) -> Result<TypeRef, MaxError> {
-        let token = self.expect(K::Identifier)?;
+    fn parse_type(&mut self) -> Result<TypeRef, MaxDiagnostic> {
+        let token = self.expect::<&str>(K::Identifier, None)?;
 
         match token.value.as_str() {
             "int" => Ok(TypeRef::Int),
@@ -512,10 +606,10 @@ impl Parser {
     }
 
     /// A variant of `parse_type` that returns the `TypeRef` in a `Spanned` holding the found identifier Span
-    fn parse_span_type(&mut self) -> Result<Spanned<TypeRef>, MaxError> {
-        let token = self.expect(K::Identifier)?;
+    fn parse_span_type(&mut self) -> Result<Spanned<TypeRef>, MaxDiagnostic> {
+        let token = self.expect::<&str>(K::Identifier, None)?;
 
-        let span = Span::from(&token);
+        let span = token.span;
 
         match token.value.as_str() {
             "int" => Ok(Spanned{node: TypeRef::Int, span}),
@@ -534,7 +628,7 @@ impl Parser {
     }
 
     /// `list`, `list of int`, or `list<int>` are all valid
-    fn parse_list_type(&mut self) -> Result<TypeRef, MaxError> {
+    fn parse_list_type(&mut self) -> Result<TypeRef, MaxDiagnostic> {
         if self.eat(K::Of) {
             let element = self.parse_type()?;
             return Ok(TypeRef::List(Some(Box::new(element))));
@@ -542,30 +636,26 @@ impl Parser {
         if self.eat(K::Lesser) {
             let element = self.parse_type()?;
             
-            self.expect(K::Greater)?;
+            self.expect(K::Greater, Some("Close a short iterable element type with '>'"))?;
             return Ok(TypeRef::List(Some(Box::new(element))));
         }
         Ok(TypeRef::List(None))
     }
 
     /// A variant of `parse_list_type`, returning the `TypeRef` in a `Spanned`
-    fn parse_spanned_list_type(&mut self, span: Span) -> Result<Spanned<TypeRef>, MaxError> {
+    fn parse_spanned_list_type(&mut self, span: Span) -> Result<Spanned<TypeRef>, MaxDiagnostic> {
         if self.eat(K::Of) {
             // Get the current identifiers span first
             // This is more accurate than using the span parameter given
-            let span = Span::from(self.current()
-                .unwrap_or_else(|| panic!("Attempted to get type name when parsing list type"))
-            );
+            let span = self.current_safe()?.span;
             let element = self.parse_type()?;
             return Ok(Spanned{node: TypeRef::List(Some(Box::new(element))), span});
         }
         if self.eat(K::Lesser) {
-            let span = Span::from(self.current()
-                .unwrap_or_else(|| panic!("Attempted to get type name when parsing list type"))
-            );
+            let span = self.current_safe()?.span;
             let element = self.parse_type()?;
             
-            self.expect(K::Greater)?;
+            self.expect(K::Greater, Some("Close a short iterable element type with '>'"))?;
             return Ok(Spanned{node: TypeRef::List(Some(Box::new(element))), span});
         }
         // Simply the current span
@@ -573,23 +663,23 @@ impl Parser {
     }
 
     /// `dictionary`, `dictionary of (string, int)`, or `dictionary<string, int>` are all valid
-    fn parse_dictionary_type(&mut self) -> Result<TypeRef, MaxError> {
+    fn parse_dictionary_type(&mut self) -> Result<TypeRef, MaxDiagnostic> {
         if self.eat(K::Of) {
-            self.expect(K::LeftParenthesis)?;
+            self.expect(K::LeftParenthesis, Some("Start a long dictionary key-value type with '('"))?;
             let key = self.parse_type()?;
-            self.expect(K::Comma)?;
+            self.expect(K::Comma, Some("The key and value types for a dictionary type are seperated with a comma"))?;
 
             let value = self.parse_type()?;
-            self.expect(K::RightParenthesis)?;
+            self.expect(K::RightParenthesis, Some("Close a long dictionary key-value type with ')'"))?;
 
             return Ok(TypeRef::Dictionary(Some(Box::new(key)), Some(Box::new(value))));
         }
         if self.eat(K::Lesser) {
             let key = self.parse_type()?;
-            self.expect(K::Comma)?;
+            self.expect(K::Comma, Some("The key and value types for a dictionary type are seperated with a comma"))?;
 
             let value = self.parse_type()?;
-            self.expect(K::Greater)?;
+            self.expect(K::Greater, Some("Close a short dictionary key-value type with '>'"))?;
 
             return Ok(TypeRef::Dictionary(Some(Box::new(key)), Some(Box::new(value))));
         }
@@ -597,23 +687,23 @@ impl Parser {
     }
 
     /// A variant of `parse_dictionary_type` that returns the `TypeRef`  in a `Spanned`
-    fn parse_spanned_dictionary_type(&mut self, span: Span) -> Result<Spanned<TypeRef>, MaxError> {
+    fn parse_spanned_dictionary_type(&mut self, span: Span) -> Result<Spanned<TypeRef>, MaxDiagnostic> {
         if self.eat(K::Of) {
-            self.expect(K::LeftParenthesis)?;
+            self.expect(K::LeftParenthesis, Some("Start a long dictionary key-value type with '('"))?;
             let key = self.parse_type()?;
-            self.expect(K::Comma)?;
+            self.expect(K::Comma, Some("The key and value types for a dictionary type are seperated with a comma"))?;
 
             let value = self.parse_type()?;
-            self.expect(K::RightParenthesis)?;
+            self.expect(K::RightParenthesis, Some("Close a long dictionary key-value type with ')'"))?;
 
             return Ok(Spanned{node: TypeRef::Dictionary(Some(Box::new(key)), Some(Box::new(value))), span});
         }
         if self.eat(K::Lesser) {
             let key = self.parse_type()?;
-            self.expect(K::Comma)?;
+            self.expect(K::Comma, Some("The key and value types for a dictionary type are seperated with a comma"))?;
 
             let value = self.parse_type()?;
-            self.expect(K::Greater)?;
+            self.expect(K::Greater, Some("Close a short dictionary key-value type with '>'"))?;
 
             return Ok(Spanned{node: TypeRef::Dictionary(Some(Box::new(key)), Some(Box::new(value))), span});
         }
@@ -625,18 +715,17 @@ impl Parser {
     // ---------------------------- //
 
     /// Parses statements in general, calling other functions, and returning a final Statement kind
-    fn parse_statement(&mut self) -> Result<Statement, MaxError> {
+    fn parse_statement(&mut self) -> Result<Statement, MaxDiagnostic> {
         let token = self
-            .current()
-            .cloned()
-            .ok_or_else(|| MaxError::EndOfFile(String::from("Expected a statement.")))?;
+            .current_safe()
+            .cloned()?;
 
         // Our span for the statement's beginning
-        let span = Span::from(&token);
+        let span = token.span;
 
         let kind: StatementKind = match token.kind {
-            K::Declare => StatementKind::Declaration(self.parse_declaration()?),
-            K::Define => StatementKind::TaskDefinition(self.parse_definition()?),
+            K::Decl => StatementKind::Declaration(self.parse_declaration()?),
+            K::Def => StatementKind::TaskDefinition(self.parse_definition()?),
             K::Say => {
                 self.pos += 1;
                 StatementKind::Say(self.parse_expression()?)
@@ -672,7 +761,7 @@ impl Parser {
                 self.pos += 1;
                 let call = self.parse_expression()?;
                 if !matches!(call.kind, ExpressionKind::Call { .. }) {
-                    return Err(Self::error_at(&token, "Expected an event call after 'emit'"))
+                    return Err(token.span.error("missing-event-call", "Expected an event call after 'emit'"))
                 };
                 StatementKind::Emit(call)
             }
@@ -680,8 +769,8 @@ impl Parser {
             K::Using => StatementKind::Using(self.parse_using()?),
 
             // Invalid statement kind?
-            _ => return Err(Self::error_at(
-                &token,
+            _ => return Err(token.span.error(
+                "statement-error",
                 format!("Unexpected token '{}', expected a statement", token.value),
             )),
         };
@@ -691,7 +780,7 @@ impl Parser {
 
     /// The value after `return` or `yield`, which may be missing.
     /// Empty return values require a semicolon at the end
-    fn parse_optional_value(&mut self) -> Result<Option<Expression>, MaxError> {
+    fn parse_optional_value(&mut self) -> Result<Option<Expression>, MaxDiagnostic> {
         if self.at_value_end() {
             // Only a semicolon is consumed. 'conclude' belongs to the enclosing block
             self.eat(K::Semicolon);
@@ -713,10 +802,29 @@ impl Parser {
         }
     }
 
+    /// Checks for if the current token and the next token are of the same kind,
+    /// returning a diagnostic if so
+    fn double_token_check(&self, kind: K, code: &'static str, message: impl Into<String>) -> Result<(), MaxDiagnostic> {
+        let first = self.current_safe()?;
+        let binding = Token::empty();
+        let second = self.tokens.get(self.pos + 1).unwrap_or(&binding);
+
+        // Check for the double
+        if first.kind == kind && second.kind == kind {
+            // Create a span of BOTH tokens
+            let span: Span = Span::new(
+                first.span.start_line, first.span.start_column, second.span.end_line, second.span.end_column
+            );
+
+            return Err(MaxDiagnostic::new(Severity::Error, code, message.into(), span));
+        }
+        Ok(())
+    }
+
     /// A statement starting with an identifier: an assignment or a bare task call
-    fn parse_identifier_statement(&mut self) -> Result<StatementKind, MaxError> {
-        let target = self.expect(K::Identifier)?;
-        let span = Span::from(&target);
+    fn parse_identifier_statement(&mut self) -> Result<StatementKind, MaxDiagnostic> {
+        let target = self.expect::<&str>(K::Identifier, None)?;
+        let span = target.span;
         let name = target.value;
         let target = self.parse_postfix(Expression::new(ExpressionKind::Variable(name), span))?;
 
@@ -726,15 +834,19 @@ impl Parser {
             return Ok(StatementKind::Assignment(Assignment { target, value, op }));
         }
 
+        // '++' and '--' are not allowed in Max \\
+        self.double_token_check(K::Plus, "plus-plus-usage", "Use '+=' instead")?;
+        self.double_token_check(K::Minus, "minus-minus-usage", "Use '-=' instead")?;
+
         if matches!(target.kind, ExpressionKind::Call { .. }) {
             return Ok(StatementKind::Expression(target));
         }
 
-        Err(self.error_here("Expected an assignment or task call."))
+        Err(self.error_here("unknown-identifier-statement", "Expected an assignment or task call."))
     }
 
-    fn parse_declaration(&mut self) -> Result<Declaration, MaxError> {
-        self.expect(K::Declare)?;
+    fn parse_declaration(&mut self) -> Result<Declaration, MaxDiagnostic> {
+        self.expect::<&str>(K::Decl, None)?;
 
         let mut modifiers = ModifierSet::default();
         while self.check(K::Modifier) {
@@ -743,14 +855,14 @@ impl Parser {
             match token.value.as_str() {
                 "fixed" => {
                     if modifiers.mutability.is_some() {
-                        return Err(Self::error_at(&token, "Cannot have more than one mutability modifier on a variable declaration."));
+                        return Err(token.span.error("mutability-overload", "Cannot have more than one mutability modifier on a variable declaration."));
                     }
                     modifiers.mutability = Some(Mutability::Fixed);
                 }
 
                 "open" | "static" => {
                     if modifiers.lifecycle.is_some() {
-                        return Err(Self::error_at(&token, "Cannot have more than one lifecycle modifier on a variable declaration."));
+                        return Err(token.span.error("lifecycle-overload", "Cannot have more than one lifecycle modifier on a variable declaration."));
                     }
                     modifiers.lifecycle = Some(if token.value == "open" { Lifecycle::Open } else { Lifecycle::Static });
                 }
@@ -759,44 +871,64 @@ impl Parser {
             }
         }
 
-        let name_token = self.expect(K::Identifier)?;
-        let name_span = Span::from(&name_token);
+        let name_token = self.expect(K::Identifier, Some("A valid name must be entered after the modifiers in a declaration"))?;
+        let name_span = name_token.span;
         let name = name_token.value;
 
         let type_ref = if self.eat(K::As) { Some(self.parse_span_type()?) } else { None };
 
-        self.expect(K::Equals)?;
-        let value = self.parse_expression()?;
+        let value: Expression;
+
+        // No '=' means automatically a `nil`
+        if !(self.current_safe()?.kind == K::Equals) {
+            value = Expression::not_real(ExpressionKind::Nil);
+            // Fixed variables MUST be initialised first
+            if let Some(Mutability::Fixed) = modifiers.mutability {
+                name_span.error("uninitialised-fixed-declaration", "A fixed declaration must be initialised first!");
+            }
+        } else {
+            // Consume the '='. We use 'expect' for safety at all times!
+            self.expect::<&str>(K::Equals, None)?;
+            value = self.parse_expression()?;
+        }
 
         let mut resortable = None;
         if self.eat(K::Comma) {
-            self.expect(K::Resort)?;
+            self.expect(K::Resort, Some("A comma after a declaration signifies a resort value"))?;
             let resort = self.parse_expression()?;
             if matches!(resort.kind, ExpressionKind::Nil) {
-                return Err(self.error_here("Cannot resort a value to nil"));
+                return Err(self.error_here("resort-nil", "Cannot resort a value to nil"));
             }
             resortable = Some(resort);
+        }
+
+        if self.warn_on(K::Semicolon, "unneeded-semicolon", "This semicolon is unnecessary") {
+            self.pos += 1; // We don't stop the parser at the semicolon
         }
 
         Ok(Declaration { name, modifiers, type_ref, value, resortable, name_span })
     }
 
-    fn parse_if(&mut self) -> Result<IfStatement, MaxError> {
-        self.expect(K::IfBegin)?;
+    fn parse_if(&mut self) -> Result<IfStatement, MaxDiagnostic> {
+        let if_span = self.expect::<&str>(K::IfBegin, None)?.span;
         let condition = self.parse_expression()?;
-        self.expect(K::Then)?;
+        self.expect(K::Then, Some("An if condition must be followed by 'then'"))?;
 
         let stops = [K::Elif, K::Maybe, K::Else, K::ConcludeStatement];
-        let body = self.parse_block(&stops)?;
+        let body = self.parse_block(&stops, if_span)?;
         let first = ConditionalBranch { condition, body };
 
         // A list of elifs possible, each with their own conditions and block
         let mut elifs = Vec::new();
         while self.eat(K::Elif) {
             let condition = self.parse_expression()?;
-            self.expect(K::Then)?;
+            // Reject assignments, and also parse the assignment anyway just to continue parsing
+            if self.reject(K::Equals, "assignment-in-condition", "'='  assigns a value; use '==' to compare values") {
+                let _ = self.parse_expression();
+            }
+            self.expect(K::Then, Some("An elif condition must be followed by 'then'"))?;
 
-            let body = self.parse_block(&stops)?;
+            let body = self.parse_block(&stops, if_span)?;
             elifs.push(ConditionalBranch { condition, body });
         }
 
@@ -806,34 +938,47 @@ impl Parser {
 
         loop {
             let token = self
-                .current()
-                .cloned()
-                .ok_or_else(|| MaxError::EndOfFile(String::from("Expected 'conclude' after if statement.")))?;
+                .current_safe()
+                .cloned()?;
 
             match token.kind {
                 K::Maybe => {
                     if maybe_block.is_some() {
-                        return Err(Self::error_at(&token, "Cannot have more than one 'maybe' branch"));
+                        return Err(token.span.error("maybe-overload", "Cannot have more than one 'maybe' branch"));
                     }
                     self.pos += 1;
-                    maybe_block = Some(self.parse_block(&stops)?);
+                    maybe_block = Some(self.parse_block(&stops, if_span)?);
                 }
                 K::Else => {
                     if else_block.is_some() {
-                        return Err(Self::error_at(&token, "Cannot have more than one 'else' branch"));
+                        return Err(token.span.error("else-overload", "Cannot have more than one 'else' branch"));
                     }
                     self.pos += 1;
-                    else_block = Some(self.parse_block(&stops)?);
+                                
+                    let nested_if = self.check(K::IfBegin);     // remember BEFORE parsing the block
+
+                    match self.parse_block(&stops, if_span) {
+                        Ok(block) => else_block = Some(block),
+                        Err(mut d) => {
+                            if nested_if && d.code == "missing-conclude" {
+                                // Add extra detail to the message!
+                                d.message.push_str(
+                                    ". The 'if' after 'else' opens a nested if with its own 'conclude'; \
+                                    use 'elif' to continue this chain, or conclude the nested if");
+                            }
+                            return Err(d);
+                        }
+                    }
                 }
                 K::Elif => {
-                    return Err(Self::error_at(&token, "Cannot have any 'elif' branches after a 'maybe' or 'else' branch"));
+                    return Err(token.span.error("misplaced-elif", "Cannot have any 'elif' branches after a 'maybe' or 'else' branch"));
                 }
                 K::ConcludeStatement => break,
-                _ => return Err(Self::error_at(&token, "Unexpected token after if/elif branches")),
+                _ => return Err(token.span.error("unknown-if-branch", "Unexpected token after if/elif branches")),
             }
         }
 
-        self.expect(K::ConcludeStatement)?;
+        self.expect_conclusion("Expected a 'conclude' to end an if statement")?;
 
         Ok(IfStatement {
             first,
@@ -844,45 +989,45 @@ impl Parser {
     }
 
     /// A while statement is alike running a look with an if statement at the beginning as the loop condition
-    fn parse_while(&mut self) -> Result<WhileStatement, MaxError> {
-        self.expect(K::While)?;
+    fn parse_while(&mut self) -> Result<WhileStatement, MaxDiagnostic> {
+        let while_span = self.expect::<&str>(K::While, None)?.span;
         let condition = self.parse_expression()?;
-        self.expect(K::Do)?;
-        let body = self.parse_block(&[K::ConcludeStatement])?;
+        self.expect(K::Do, Some("A while condition must be followed by 'do'"))?;
+        let body = self.parse_block(&[K::ConcludeStatement], while_span)?;
 
-        self.expect(K::ConcludeStatement)?;
+        self.expect_conclusion("Expected a 'conclude' to end a while loop")?;
         Ok(WhileStatement { condition, body })
     }
 
     /// For statements are specific to integer enumerating
-    fn parse_for(&mut self) -> Result<ForStatement, MaxError> {
-        self.expect(K::For)?;
-        let name_token = self.expect(K::Identifier)?;
+    fn parse_for(&mut self) -> Result<ForStatement, MaxDiagnostic> {
+        let for_span = self.expect::<&str>(K::For, None)?.span;
+        let name_token = self.expect(K::Identifier, Some("Type a variable name first after 'for'"))?;
         // Even in a for statement, we need a name span...
-        let name_span = Span::from(&name_token);
+        let name_span = name_token.span;
         let name = name_token.value;
 
-        self.expect(K::Equals)?;
+        self.forbid(K::In, "for-in", "'for' counts between numbers, use `foreach x in` to iterate over a collection")?;
+
+        self.expect(K::Equals, Some("Expected '=' to assign the variable name a value"))?;
         let start = self.parse_expression()?;
 
-        self.expect(K::To)?;
+        self.expect(K::To, Some("Use 'to' in order to signal where the for loop ends"))?;
         let limit = self.parse_expression()?;
 
         // Our step is 1 by default
         let step = if self.eat(K::Comma) {
-            self.expect(K::Step)?;
+            self.expect(K::Step, Some("A comma after the inital for loop declaration indicates a step value"))?;
             self.parse_expression()?
         } else {
             // Let our span be where the step *would* be 🍕🍕🍕 I got hungry
-            let span: Span = Span::from(self.current()
-                .unwrap_or_else(|| panic!("Error occurred when attempting to create Span during `parse_list`"))
-            );
+            let span: Span = self.current_safe()?.span;
             Expression::new(ExpressionKind::Integer(1), span)
         };
 
-        self.expect(K::Do)?;
-        let body = self.parse_block(&[K::ConcludeStatement])?;
-        self.expect(K::ConcludeStatement)?;
+        self.expect(K::Do, Some("Expected a 'do' to start a for loop body"))?;
+        let body = self.parse_block(&[K::ConcludeStatement], for_span)?;
+        self.expect_conclusion("Expected a 'conclude' to end a for loop")?;
 
         // The declaration for the for statement looper
         let declaration = Declaration {
@@ -898,8 +1043,8 @@ impl Parser {
     }
 
     /// Foreach statements are specific to looping through an iteration
-    fn parse_foreach(&mut self) -> Result<ForeachStatement, MaxError> {
-        self.expect(K::Foreach)?;
+    fn parse_foreach(&mut self) -> Result<ForeachStatement, MaxDiagnostic> {
+        let foreach_span = self.expect::<&str>(K::Foreach, None)?.span;
 
         /*
         Why a list of variables?
@@ -916,29 +1061,29 @@ impl Parser {
         if self.eat(K::LeftParenthesis) {
             // foreach (item, index) in ...
             loop {
-                variables.push(self.expect(K::Identifier)?.value);
+                variables.push(self.expect(K::Identifier, Some("In variable collection of a foreach condition, a comma indicates another variable name"))?.value);
                 if !self.eat(K::Comma) {
                     break;
                 }
             }
-            self.expect(K::RightParenthesis)?;
+            self.expect(K::RightParenthesis, Some("Foreach variable collection must be ended by ')'"))?;
         } else {
-            variables.push(self.expect(K::Identifier)?.value);
+            variables.push(self.expect(K::Identifier, Some("Type a variable name first in a foreach loop condition"))?.value);
         }
 
-        self.expect(K::In)?;
+        self.expect(K::In, Some("Follow the declared name by 'in'"))?;
         let iterable = self.parse_expression()?;
-        self.expect(K::Do)?;
-        let body = self.parse_block(&[K::ConcludeStatement])?;
-        self.expect(K::ConcludeStatement)?;
+        self.expect(K::Do, Some("Expected a 'do' to start foreach loop body"))?;
+        let body = self.parse_block(&[K::ConcludeStatement], foreach_span)?;
+        self.expect_conclusion("Expected a 'conclude' to end a foreach loop body")?;
 
         Ok(ForeachStatement { variables, iterable, body })
     }
 
-    fn parse_match(&mut self) -> Result<MatchStatement, MaxError> {
-        self.expect(K::Match)?;
+    fn parse_match(&mut self) -> Result<MatchStatement, MaxDiagnostic> {
+        self.expect::<&str>(K::Match, None)?;
         let condition = self.parse_expression()?;
-        self.expect(K::Then)?;
+        self.expect(K::Then, Some("Expected 'then' after match statement condition"))?;
 
         let (cases, default) = self.parse_cases()?;
 
@@ -947,7 +1092,7 @@ impl Parser {
 
     /// Parses the cases from a match statement, starting after the 'then'.
     /// This returns the Vec of Cases, as well as an Optional 'Else' case as a tuple
-    fn parse_cases(&mut self) -> Result<(Vec<Case>, Option<Vec<Statement>>), MaxError> {
+    fn parse_cases(&mut self) -> Result<(Vec<Case>, Option<Vec<Statement>>), MaxDiagnostic> {
         // Aka an empty match statement
         if self.eat(K::ConcludeStatement) {
             return Ok((vec![], None));
@@ -962,17 +1107,18 @@ impl Parser {
         loop {
 
             // Very special exception for the one 'else' case
-            if self.eat(K::Else) {
+            if let Some(kind) = self.peek_kind(0) && kind == K::Else {
+                let else_token = self.consume()?;
                 // ONLY Conclude is expected at the end. Meaning the 'else' case MUST be the last case
-                else_case = Some(self.parse_block(&[K::ConcludeStatement])?);
-                self.expect(K::ConcludeStatement)?;
+                else_case = Some(self.parse_block(&[K::ConcludeStatement], else_token.span)?);
+                self.expect_conclusion("No other cases can follow an 'else' case; Expected a 'conclude'")?;
                 break;
             }
 
-            self.expect(K::Case)?;
+            let case_span = self.expect(K::Case, Some("A match case is started by 'case'"))?.span;
             let expression = self.parse_expression()?;
-            self.expect(K::Do)?;
-            let body = self.parse_block(&stops)?;
+            self.expect(K::Do, Some("Expected a 'do' after a match case condition"))?;
+            let body = self.parse_block(&stops, case_span)?;
 
             let case: Case = Case {
                 condition: expression,
@@ -995,28 +1141,30 @@ impl Parser {
     /// Validates the order of a given Vector of `Parameter`.
     /// `Parameter::Optional` must always be after required params,
     /// and `Parameter::Variadic` must always be the last param, with only one existing
-    fn validate_parameter_order(params: &Vec<Parameter>) {
+    fn validate_parameter_order(params: &Vec<Parameter>) -> Result<(), MaxDiagnostic> {
         let mut seen_optional: bool = false;
 
         for i in 0..params.len() {
             match &params[i].kind {
                 ParameterKind::Required => if seen_optional {
-                    panic!("Required parameter '{}' cannot follow an optional parameter", &params[i].name);
+                    return Err(MaxDiagnostic::new(Severity::Error, "required-after-optional", format!("Required parameter '{}' cannot follow an optional parameter", params[i].name.node), params[i].name.span));
                 }
 
                 ParameterKind::Optional => seen_optional = true,
 
                 // If it is not the last param
                 ParameterKind::Variadic => if i != params.len() - 1 {
-                    panic!("Variadic parameter '{}' must be the last parameter", &params[i].name);
+                    return Err(MaxDiagnostic::new(Severity::Error, "required-after-optional", format!("Variadic parameter '{}' must be the last parameter", params[i].name.node), params[i].name.span));
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Parses parameters, this always begins by expecting a left parenthesis
-    fn parse_parameters(&mut self) -> Result<Vec<Parameter>, MaxError> {
-        self.expect(K::LeftParenthesis)?;
+    fn parse_parameters(&mut self) -> Result<Vec<Parameter>, MaxDiagnostic> {
+        self.expect::<&str>(K::LeftParenthesis, None)?;
 
         let mut parameters = Vec::new();
         if self.eat(K::RightParenthesis) {
@@ -1024,8 +1172,9 @@ impl Parser {
         }
 
         loop {
-            let token = self.expect(K::Identifier)?;
-            let name = token.value;
+            let token = self.expect(K::Identifier, Some("A comma in parameters indicates another parameter name"))?;
+            let span = token.span;
+            let name = Spanned { node: token.value, span};
             let mut kind: ParameterKind = ParameterKind::Required;
 
             // Symbols to differentiate param types
@@ -1045,15 +1194,15 @@ impl Parser {
                 break;
             }
         }
-        self.expect(K::RightParenthesis)?;
+        self.expect(K::RightParenthesis, Some("Expected ')' to end parameters"))?;
 
-        Self::validate_parameter_order(&parameters);
+        Self::validate_parameter_order(&parameters)?;
 
         Ok(parameters)
     }
 
-    fn parse_definition(&mut self) -> Result<TaskDefinition, MaxError> {
-        self.expect(K::Define)?;
+    fn parse_definition(&mut self) -> Result<TaskDefinition, MaxDiagnostic> {
+        let def_span = self.expect::<&str>(K::Def, None)?.span;
 
         let mut is_native = false;
 
@@ -1062,7 +1211,7 @@ impl Parser {
             // `native` is only special straight after `define`
             let native_word = self.consume()?;
             if native_word.value != "native" {
-                return Err(Self::error_at(&native_word, "Identifier after 'define' can only be 'native'"));
+                return Err(native_word.span.error("define-not-native", "Identifier after 'define' can only be 'native'"));
             }
             else {
                 // 'native' was found, so now it is true!
@@ -1070,31 +1219,32 @@ impl Parser {
             }
         }
 
-        let kind_token = self.expect(K::TaskType)?;
+        // We don't check the kind_token here, it's already checked for it's value afterwards
+        let kind_token = self.expect::<&str>(K::TaskType, None)?;
         let kind = match kind_token.value.as_str() {
             "function" => TaskKind::Function,
             "coroutine" => TaskKind::Coroutine,
             "event" => TaskKind::Event,
-            other => return Err(Self::error_at(&kind_token, format!("Unknown task type '{other}'"))),
+            other => return Err(kind_token.span.error("unknown-tasktype", format!("Unknown task type '{other}'"))),
         };
 
-        let name_token = self.expect(K::Identifier)?;
-        let name_span = Span::from(&name_token);
+        let name_token = self.expect(K::Identifier, Some("Required to give a task definition a name"))?;
+        let name_span = name_token.span;
         let name = name_token.value;
 
-        let parameters: Vec<Parameter> = // The if block
+        let parameters: Vec<Parameter> =
         // '=>'
         if self.eat(K::EvaluateTo) {
             Vec::new() // No params by default
         } else if self.check(K::With) {
             let with = self.consume()?;
             if kind == TaskKind::Coroutine {
-                return Err(Self::error_at(&with, "Coroutines cannot intake parameters."));
+                return Err(with.span.error("param-coroutine", "Coroutines cannot intake parameters."));
             }
 
             self.parse_parameters()?
         } else {
-            return Err(self.error_here("Expected a task name to be followed by '=>' or parameters ('with')"));
+            return Err(self.error_here("task-param-syntax-error", "Expected a task name to be followed by '=>' or parameters ('with')"));
         };
 
         let return_type = if self.eat(K::Return) {
@@ -1105,37 +1255,47 @@ impl Parser {
 
         if self.eat(K::Semicolon) {
             if !is_native {
-                return Err(self.error_here("Cannot use a semicolon to show an empty body for a none-native task"));
+                return Err(self.error_here("non-native-task-semicolon", "Cannot use a semicolon to show an empty body for a none-native task"));
             }
             else {
                 return Ok(TaskDefinition { kind, name, is_native, parameters, return_type, body: vec![], name_span });
             }
         }
 
-        self.expect(K::Do)?;
-        let body = self.parse_block(&[K::ConcludeStatement])?;
-        self.expect(K::ConcludeStatement)?;
+        self.expect(K::Do, Some("Start a task body with 'do'"))?;
+        let body = self.parse_block(&[K::ConcludeStatement], def_span)?;
+        self.expect_conclusion("Expected a 'conclude' to end a task body")?;
 
         // Native checks!
         if is_native {
             if kind == TaskKind::Coroutine {
-                return Err(Self::error_at(&kind_token, "A coroutine cannot be native"));
+                return Err(kind_token.span.error("native-coroutine", "A coroutine cannot be native"));
             }
             if !body.is_empty() {
-                return Err(Self::error_at(&kind_token, "A native definition must have an empty body"));
+                return Err(kind_token.span.error("non-empty-native-task", "A native definition must have an empty body"));
             }
         }
 
         Ok(TaskDefinition { kind, name, is_native, parameters, return_type, body, name_span })
     }
 
-    fn parse_enum(&mut self) -> Result<EnumDefinition, MaxError> {
-        self.expect(K::Enum)?;
-        let ident_token = self.expect(K::Identifier)?;
-        let name_span = Span::from(&ident_token);
+    fn parse_enum(&mut self) -> Result<EnumDefinition, MaxDiagnostic> {
+        self.expect::<&str>(K::Enum, None)?;
+        let ident_token = self.expect(K::Identifier, Some("An enum must initialise with a name"))?;
+        let name_span = ident_token.span;
         let identifier = ident_token.value;
+        // Test for pascal case
+        if !Casing::is_pascal_case(&identifier) {
+            let suggestion = Casing::to_pascal_case(&identifier);
+            if !suggestion.is_empty() { // a name like `___` has nothing to suggest, so technically nothing to warn about
+                self.diagnostics.push(name_span.warning(
+                    "pascal-case-recommendation",
+                    format!("Enum name `{identifier}` is recommended to be PascalCase (`{suggestion}`)"),
+                ));
+            }
+        };
 
-        self.expect(K::Members)?;
+        self.expect(K::Members, Some("Define the body of members with 'members'"))?;
         // Enum members parsed in a func to allow recursive sub-members
         let members = self.parse_enum_members()?;
         Ok(EnumDefinition { identifier, members, name_span })
@@ -1143,13 +1303,13 @@ impl Parser {
 
     /// Parses members up to and including their closing `conclude`.
     /// A member may have `$ members ... conclude` (parsed recursively) or `$ OtherEnum`.
-    fn parse_enum_members(&mut self) -> Result<Vec<EnumMember>, MaxError> {
+    fn parse_enum_members(&mut self) -> Result<Vec<EnumMember>, MaxDiagnostic> {
         let mut members = Vec::new();
         let mut enumerable = 0;
 
         while !self.check(K::ConcludeStatement) {
-            let name_token = self.expect(K::Identifier)?;
-            let span = Span::from(&name_token);
+            let name_token = self.expect(K::Identifier, Some("A comma in an enum always signifies another enum member"))?;
+            let span = name_token.span;
             let name = name_token.value;
 
             let mut sub_members = Vec::new();
@@ -1159,7 +1319,8 @@ impl Parser {
                 if self.eat(K::Members) {
                     sub_members = self.parse_enum_members()?;
                 } else {
-                    sub_enum_reference = Some(self.expect(K::Identifier)?.value);
+                    sub_enum_reference = Some(self.expect(K::Identifier, Some("Give a valid sub enum reference if not sub-members"))?.value);
+                    self.forbid(K::Dollar, "sub-reference-members", "Cannot create sub members for an sub-enum reference")?;
                 }
             }
 
@@ -1171,25 +1332,25 @@ impl Parser {
             }
         }
 
-        self.expect(K::ConcludeStatement)?;
+        self.expect_conclusion("Expected a 'conclude' to end an enum body")?;
         Ok(members)
     }
 
     /// `using module;` or `using module.member.member;`
-    fn parse_using(&mut self) -> Result<UsingStatement, MaxError> {
-        self.expect(K::Using)?;
+    fn parse_using(&mut self) -> Result<UsingStatement, MaxDiagnostic> {
+        self.expect::<&str>(K::Using, None)?;
 
-        let module_token = self.expect(K::Identifier)?;
-        let module_span: Span = Span::from(&module_token);
+        let module_token = self.expect(K::Identifier, Some("Expected a valid identifier following 'using'"))?;
+        let module_span: Span = module_token.span;
         let module = module_token.value;
 
         // Push members in to allow grabbing specific things from a module
         let mut members = Vec::new();
         while !self.check(K::Semicolon) {
-            self.expect(K::Dot)?;
-            members.push(self.expect(K::Identifier)?.value);
+            self.expect(K::Dot, Some("Expected a dot for member access. Use ';' to end the using statement"))?;
+            members.push(self.expect(K::Identifier, Some("A dot indicates a name to member access from a module"))?.value);
         }
-        self.expect(K::Semicolon)?;
+        self.expect::<&str>(K::Semicolon, None)?;
 
         Ok(UsingStatement { module, members, module_span })
     }
