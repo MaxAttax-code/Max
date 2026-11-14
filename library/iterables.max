@@ -1,19 +1,19 @@
-define native function countChars with (str as string) return dictionary;
+def native function countChars with (str as string) return dictionary;
 
-define native function countExistingChars with (str as string) return dictionary;
+def native function countExistingChars with (str as string) return dictionary;
 
-define native function toDictionary with (list1 as list, list2 as list) return dictionary;
+def native function toDictionary with (list1 as list, list2 as list) return dictionary;
 
-define native function mode with (iterable);
+def native function mode with (iterable);
 
-define native function middleValue with (lst as list);
+def native function middleValue with (lst as list);
 
-define native function range with (lst as list of int) return float;
+def native function range with (lst as list of int) return float;
 
-define native function inCommon with (list1 as list, list2 as list, choice? as boolean) return list;
+def native function inCommon with (list1 as list, list2 as list, choice? as boolean) return list;
 
-define native function flatten with (lst as list) return list;
+def native function flatten with (lst as list) return list;
 
-define native function permutations with (lst as list, r as int) return int;
+def native function permutations with (lst as list, r as int) return int;
 
-define native function combinations with (lst as list, r as int) return int;
+def native function combinations with (lst as list, r as int) return int;
