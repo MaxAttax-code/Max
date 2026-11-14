@@ -1,5 +1,9 @@
+use crate::ast::Span;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
+    /// Specific to `Token::empty()`
+    Empty,
     Using,
 
     Integer,
@@ -16,10 +20,10 @@ pub enum TokenKind {
     With,
     Members,
 
-    Declare,
+    Decl,
     Resort,
     Say,
-    Define,
+    Def,
     Enum,
 
     TaskType,
@@ -95,17 +99,36 @@ pub struct Token {
     pub kind: TokenKind,
     pub value: String,
     // Positional info
-    pub line: u32,
-    pub column: u32,
+    pub span: Span
 }
 
 impl Token {
-    pub fn new(kind: TokenKind, value: impl Into<String>, line: u32, column: u32) -> Self {
+    pub fn new(kind: TokenKind, value: impl Into<String>, start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
         Token {
             kind,
             value: value.into(),
-            line,
-            column
+            span: Span::new(start_line, start_column, end_line, end_column)
         }
+    }
+    
+    pub fn new_alt(kind: TokenKind, value: impl Into<String>, (start_line, start_column): (u32, u32), (end_line, end_column): (u32, u32)) -> Self {
+        Token {
+            kind,
+            value: value.into(),
+            span: Span::new(start_line, start_column, end_line, end_column)
+        }
+    }
+    
+    pub fn new_from(kind: TokenKind, value: impl Into<String>, span: Span) -> Self {
+        Token {
+            kind,
+            value: value.into(),
+            span
+        }
+    }
+
+    /// Creates an empty, default token
+    pub fn empty() -> Self {
+        Token { kind: TokenKind::Empty, value: "nothing".to_owned(), span: Span::new(0, 0, 0, 0) }
     }
 }
