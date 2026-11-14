@@ -1,27 +1,32 @@
-use crate::{error::MaxError, token::Token};
+use crate::{error::{MaxDiagnostic, Severity}};
 
 /// Where something starts in the source. Line and column both start at 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
-    pub line: u32,
-    pub column: u32,
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32
 }
 
 impl Span {
-    pub fn new(line: u32, column: u32) -> Self {
-        Span { line, column }
+    pub fn new(start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
+        Span { start_line, start_column, end_line, end_column }
     }
-}
 
-impl From<&Token> for Span {
-    fn from(token: &Token) -> Self {
-        Span { line: token.line, column: token.column }
+    pub fn char((char_line, char_column): (u32, u32)) -> Self {
+        Span { start_line: char_line, start_column: char_column, end_line: char_line, end_column: char_column }
     }
-}
 
-impl Span {
-    pub fn error(self, message: impl Into<String>) -> MaxError {
-        MaxError::Compile { message: message.into(), line: self.line, column: self.column }
+    pub fn to(self, other: Span) -> Span {
+        Span::new(self.start_line, self.start_column, other.end_line, other.end_column)
+    }
+
+    pub fn error(self, code: &'static str, message: impl Into<String>) -> MaxDiagnostic {
+        MaxDiagnostic::new(Severity::Error, code, message.into(), self)
+    }
+    pub fn warning(self, code: &'static str, message: impl Into<String>) -> MaxDiagnostic {
+        MaxDiagnostic::new(Severity::Warning, code, message.into(), self)
     }
 }
 
@@ -101,11 +106,26 @@ impl Expression {
         }
     }
 
-    pub fn new_alt(kind: ExpressionKind, line: u32, column: u32) -> Self {
+    pub fn new_alt(kind: ExpressionKind, start_line: u32, start_column: u32) -> Self {
         Self {
             kind,
-            span: Span { line, column }
+            span: Span { start_line, start_column,end_line: 0, end_column: 0 }
         }
+    }
+
+    /// Creates with the full line and columns in a span
+    pub fn new_altf(kind: ExpressionKind, start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
+        Self {
+            kind,
+            span: Span { start_line, start_column, end_line, end_column }
+        }
+    }
+
+    /// Creates an Expression with the Spans positions set to (0, 0, 0, 0).
+    /// This is used for replacement values that act like the user declared an Expression,
+    /// despite not being written in the document
+    pub fn not_real(kind: ExpressionKind) -> Self {
+        Self { kind, span: Span { start_line: 0, start_column: 0, end_line: 0, end_column: 0 } }
     }
 }
 
@@ -135,7 +155,7 @@ pub enum ExpressionKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lambda {
-    pub parameters: Vec<String>,
+    pub parameters: Vec<Parameter>,
     pub body: LambdaBody,
 }
 
@@ -174,7 +194,7 @@ pub enum ParameterKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     pub type_ref: Option<Spanned<TypeRef>>,
-    pub name: String,
+    pub name: Spanned<String>,
     pub kind: ParameterKind
 }
 
