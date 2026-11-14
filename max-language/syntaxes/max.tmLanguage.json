@@ -47,7 +47,7 @@
 
         "declarations": {
             "name": "meta.declaration.max",
-            "begin": "\\b(declare)\\b",
+            "begin": "\\b(decl)\\b",
             "beginCaptures": {
                 "1": {
                     "name": "keyword.declaration.max"
@@ -82,7 +82,7 @@
         
         "definitions": {
             "name": "meta.definition.max",
-            "begin": "\\b(define)\\b",
+            "begin": "\\b(def)\\b",
             "beginCaptures": {
                 "1": {
                     "name": "keyword.declaration.max"
