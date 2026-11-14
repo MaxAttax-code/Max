@@ -26,8 +26,8 @@
                     ".mx"
                 ],
                 "icon": {
-                    "light": "./icons/max-file.png",
-                    "dark": "./icons/max-file-darkmode.png"
+                    "light": "./icons/max-icon.png",
+                    "dark": "./icons/max-icon-darkmode.png"
                 }
             }
         ],
@@ -48,5 +48,8 @@
     "devDependencies": {
         "@types/node": "^26.6.2",
         "@types/vscode": "^1.0.0"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
     }
 }
