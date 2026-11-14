@@ -1,5 +1,6 @@
 use max_bytecode::*;
-use max_compiler::error::MaxError;
+use max_compiler::error::{RuntimeError};
+use max_compiler::project::MAIN_MODULE;
 use crate::natives::NativeRegistry;
 use std::sync::Arc;
 use std::{cell::RefCell, rc::Rc};
@@ -292,12 +293,6 @@ impl Value {
             keys,
             values,
         })))
-    }
-
-    /// Compares if the Value types of this and another value are the same. This ignores values within the Value Type
-    pub fn compare_valuetypes(&self, other: &Value) -> bool {
-        // Simply check if they are of the same value type (NOT THE VALUES INSIDE!)
-        std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 
     /// Intakes an `&ConstValue` to read and output a valid `Value`
@@ -660,23 +655,23 @@ impl VirtualMachine {
     /// Must have a Bytecode param passed in
     pub fn run(&mut self, module_name: String, bytecode: Bytecode) {
         let binding = module_name.clone();
-        self.run_chunk(module_name, bytecode).expect(&format!("Error running file {}.", binding).into_boxed_str());
+        self.run_chunk(module_name, bytecode).map_err(|c| format!("Error running file {}: {}", binding, c.message)).unwrap_or(());
     }
 
     /// Begins executing the first 'main' file found, starting from instruction zero
     pub fn run_main(&mut self) {
         // Start execution by fetching "main" from the modules map
-        let main_module = self.modules.get("main").cloned().expect("No main.max file inside modules found!");
+        let main_module = self.modules.get(MAIN_MODULE).cloned().expect("No main.max file inside modules found!");
 
         // Begin execution loop starting at instruction 0 in mainD
-        self.run_chunk(String::from("main"), main_module).expect("Error running main.max.");
+        self.run_chunk(String::from(MAIN_MODULE), main_module).map_err(|c| format!("Error running main.max: {}", c.message)).unwrap_or(());
     }
 
     /// The function that runs through any bytecode given.
     /// Although it's used to run the first bytecode that is given,
     /// it can also be used to run other seperate bytecode chunks.
     /// E.g. from a lambda, check out the VM's `call_lambda` function.
-    fn run_chunk(&mut self, module_name: String, bytecode: Bytecode) -> Result<(), MaxError> {
+    fn run_chunk(&mut self, module_name: String, bytecode: Bytecode) -> Result<(), RuntimeError> {
         self.module_name = module_name;
 
         self.task_definitions = Arc::clone(&bytecode.tasks); // Give ourselves the current tasks defined
@@ -1490,10 +1485,15 @@ impl VirtualMachine {
 
                         let mut parameters: HashMap<String, VariableEntry> = HashMap::new();
 
-                        for (name, argument) in parameter_names.into_iter().zip(arguments) {
+                        for (param, argument) in parameter_names.into_iter().zip(arguments) {
+                            let typing = match param.parameter_kind {
+                                ParamKind::Required(t) => t,
+                                _ => return Err(RuntimeError::new("Can only have Required parameters in a lambda"))
+                            };
+
                             // All the parameters inputted are also inserted into the callscope as declared variables
-                            parameters.insert(name, VariableEntry::new(
-                                argument, Modifiers::e_new(), None, None )
+                            parameters.insert(param.name, VariableEntry::new(
+                                argument, Modifiers::e_new(), typing, None )
                             );
                         }
 
@@ -1765,8 +1765,8 @@ impl VirtualMachine {
         self.modules = Arc::new(modules);
     }
 
-    pub fn runtime_error(message: impl Into<String>) -> Result<(), MaxError> {
-        Err(MaxError::Runtime(message.into()))
+    pub fn runtime_error(message: impl Into<String>) -> Result<(), RuntimeError> {
+        Err(RuntimeError::new(message))
     }
 
     /*
@@ -1847,18 +1847,6 @@ impl VirtualMachine {
             CompareOp::NotEqual => left.evaluate_not_equal(&right),
             
             CompareOp::Greater | CompareOp::GreaterEqual | CompareOp::Lesser | CompareOp::LesserEqual => left.evaluate_relational(operation, &right)
-        }
-    }
-
-    pub fn negate_boollike(bool: &Value) -> Value {
-        match bool {
-            Value::Boolean(val) => { Value::Boolean(!val) },
-            Value::Possible(possible) => match possible.borrow().current {
-                Some(value) => Value::Boolean(!value),
-                None => Value::new_possible(),
-            },
-
-            _ => panic!("Can only negate bool like values, got {}", bool)
         }
     }
 
@@ -2125,9 +2113,9 @@ impl VirtualMachine {
 
         // Allocate a hashmap for all the params
         let mut parameters = HashMap::with_capacity(args.len());
-        for (name, value) in parameter_names.into_iter().zip(args) {
+        for (param, value) in parameter_names.into_iter().zip(args) {
             parameters.insert(
-                name,
+                param.name,
                 VariableEntry::new(
                     value,
                     Modifiers::e_new(),
@@ -2167,7 +2155,7 @@ impl VirtualMachine {
         // Set prev instructions to the current active instructions!
         let previous_active_instructions = Arc::clone(&self.active_instructions);
         // Run it (btw no print completion so that the 'Execution complete' print statement doesn't run)
-        self.run_chunk(self.module_name.clone(), nested_bytecode).expect("Error running lambda.");
+        self.run(self.module_name.clone(), nested_bytecode);
         // And now we reassign the previous active instructions back :)
         self.active_instructions = previous_active_instructions;
 
@@ -3158,22 +3146,6 @@ impl VirtualMachine {
             }
 
             _ => {}
-        }
-    }
-
-    /// Checks if a given value is valid to be a dictionary key
-    pub fn valid_dictkey_value(m_type: &MaxType, value: &Value) -> bool {
-        match m_type {
-            // Pretty cool, '..' means just ignore what's inside
-            MaxType::DictionaryType( .. ) => {
-                if matches!(value, Value::String(_) | Value::Integer(_)) {
-                    return true
-                }
-
-                false
-            }
-
-            _ => { println!("Can only call this function on dictionaries!"); false }
         }
     }
 }
