@@ -1,24 +1,44 @@
 use std::fmt::{self};
 
-#[derive(Debug)]
-pub enum MaxError {
-    Syntax { message: String, line: u32, column: u32 },
-    EndOfFile(String),
-    Logic(String),
-    Compile { message: String, line: u32, column: u32 },
-    Runtime(String)
+use crate::ast::Span;
+
+#[derive(Debug, PartialEq, Default)]
+pub enum Severity {
+    #[default]
+    Error,
+    Warning,
+    Info,
+    Hint
 }
 
-impl fmt::Display for MaxError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MaxError::Syntax {message, line, column} => write!(f, "Syntax error: {message} at line {line}, column {column}"),
-            MaxError::EndOfFile(m) => write!(f, "{m}"),
-            MaxError::Logic(m) => write!(f, "{m}"),
-            MaxError::Compile {message, line, column} => write!(f, "Error during compiling: {message} at line {line}, column {column}"),
-            MaxError::Runtime(message) => write!(f, "Runtime Error: {message}")
-        }
+#[derive(Debug, Default)]
+pub struct MaxDiagnostic {
+    pub severity: Severity,
+    pub code: &'static str,
+    pub message: String,
+    pub span: Span
+}
+
+impl MaxDiagnostic {
+    pub fn new(severity: Severity, code: &'static str, message: String, span: Span) -> Self {
+        MaxDiagnostic { severity, code, message, span }
     }
 }
 
-impl std::error::Error for MaxError {}
+impl fmt::Display for MaxDiagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Max {:?}: {}; at line {}, column {}", self.severity, self.message, self.span.start_line, self.span.start_column)
+    }
+}
+
+impl std::error::Error for MaxDiagnostic {}
+
+pub struct RuntimeError {
+    pub message: String
+}
+
+impl RuntimeError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self { message: message.into() }
+    }
+}
