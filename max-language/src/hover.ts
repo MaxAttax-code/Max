@@ -1,5 +1,5 @@
+/*
 import * as vscode from "vscode";
-import { keywords, types, taskTypes, globalTasks } from "./language";
 
 export function registerHover(context: vscode.ExtensionContext) {
     // Provides us the hover-info we want
@@ -83,3 +83,4 @@ export function registerHover(context: vscode.ExtensionContext) {
     // Don't forget to push it to subscriptions so it cleans up properly
     context.subscriptions.push(hoverProvider);
 }
+*/
