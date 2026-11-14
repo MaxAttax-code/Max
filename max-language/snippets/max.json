@@ -22,9 +22,9 @@
     },
 
     "Full Declare Statement": {
-        "prefix": "declare",
+        "prefix": "decl",
         "body": [
-            "declare ${1:name} as type = value, resort resortValue"
+            "decl ${1:name} as type = value, resort resortValue"
         ],
         "description": "Creates a full declare statement"
     },
@@ -62,7 +62,7 @@
     "Task Definition": {
         "prefix": "task",
         "body": [
-            "define taskType name with (paramType param) do",
+            "def taskType name with (paramType param) do",
             "\t$0",
             "conclude"
         ],
@@ -87,5 +87,15 @@
             "conclude,"
         ],
         "description": "Creates an enum member with empty sub members"
+    },
+
+    "Match Statement": {
+        "prefix": "match",
+        "body": [
+            "match $0 then",
+            "\tcase  do",
+            "\t\t",
+            "conclude"
+        ]
     }
 }
