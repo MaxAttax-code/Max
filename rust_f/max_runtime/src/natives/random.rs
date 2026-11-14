@@ -38,7 +38,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             vec![ParamSpec::required(IntegerType), ParamSpec::required(IntegerType)],
             self::random_rand_int
-        )
+        ).doc("Gets a random integer between the minimum and maximum given")
     );
 
     registry.register_task(
@@ -47,7 +47,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(FloatType), ParamSpec::required(FloatType)],
             self::random_rand_float
-        )
+        ).doc("Gets a random float between the minimum and maximum given")
     );
 
     registry.register_task(
@@ -56,7 +56,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None))],
             self::random_shuffle
-        )
+        ).doc("Shuffles a given list and returns it. The complexity of a list of slices n is O(n)")
     );
 
     registry.register_task(
@@ -65,7 +65,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(ListType(None))],
             self::random_shuffle_now
-        )
+        ).doc("Shuffles a given list in place")
     );
 
     registry.register_task(
@@ -74,7 +74,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(NoType),
             vec![ParamSpec::required(ListType(None)), ParamSpec::variadic(IntegerType)],
             self::random_weighted_choice
-        )
+        ).doc("Intakes a list of choices, and any following arguments are the weights attached to each individual item in the list. \
+                The weights apply to the list items in order, and must be integers. Note that if less weights than the list length \
+                were given, all remaining items are given a weight of 1 automaiclaly. This errs if more weights than list items were given.")
     );
 
     registry.register_task(
@@ -83,7 +85,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(IntegerType)],
             self::random_seed
-        )
+        ).doc("Seeds the entire random module with the integer provided. Seeding this in any part of a project applies this to the rest of the code \
+                that executes after this. Seeds allow the randomness to be defined for all of your modules.")
     );
 
     
@@ -96,7 +99,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             IntegerType,
             self::random_min_int
-        )
+        ).doc("Returns the minimum integer limit one can use")
     );
 
     registry.register_property(
@@ -105,7 +108,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             IntegerType,
             self::random_max_int
-        )
+        ).doc("Returns the maximum integer limit one can use")
     );
 
     registry.register_property(
@@ -114,7 +117,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             FloatType,
             self::random_min_float
-        )
+        ).doc("Returns the minimum float limit one can use")
     );
 
     registry.register_property(
@@ -123,7 +126,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             FloatType,
             self::random_max_float
-        )
+        ).doc("Returns the maximum float limit one can use")
     );
 }
 

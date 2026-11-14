@@ -17,7 +17,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(BooleanType),
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
             self::dictionary_contains_key
-        )
+        ).doc("True if the dictionary contains this key")
     );
 
     registry.register_task(
@@ -27,7 +27,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none(), ParamSpec::required_none()],
             self::dictionary_add
-        )
+        ).doc("Adds the given key and value to the dictionary. This errors if the dictionary does not support duplicate keys")
     );
 
     registry.register_task(
@@ -37,7 +37,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
             self::dictionary_remove
-        )
+        ).doc("Removes the given key from the dictionary and it's corresponding value, including duplicates if allowed. This does nothing if the key was not found")
     );
 
     registry.register_task(
@@ -47,7 +47,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(DictionaryType(None, None)),
             vec![ParamSpec::required(DictionaryType(None, None))],
             self::dictionary_copy
-        )
+        ).doc("Copies the dictionary and returns as a value. This includes the dictionaries key-value types if it had any")
     );
 
     registry.register_task(
@@ -57,7 +57,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(DictionaryType(None, None)),
             vec![ParamSpec::required(DictionaryType(None, None))],
             self::dictionary_soft_copy
-        )
+        ).doc("Copies the dictionary and returns as a value. This ignores the dictionaries key-value types, but still allows duplicates if needed")
     );
 
     registry.register_task(
@@ -67,7 +67,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(DictionaryType(None, None))],
             self::dictionary_clear
-        )
+        ).doc("Clears the dictionary of all key-value pairs")
     );
 
     registry.register_task(
@@ -77,7 +77,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required(BooleanType)],
             self::dictionary_allow_duplicates
-        )
+        ).doc("Allows this dictionary to hold duplicate keys. These keys can have seperate values assigned to each. Since a dictionary")
     );
 
     registry.register_task(
@@ -87,7 +87,22 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(NoType),
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
             self::dictionary_attempt_get
-        )
+        ).doc("Attempts to get a value from a corresponding key in the dictionary. \
+                This returns nil if not found, and finds the first occurrence of the key when there are duplicates. \
+                First occurrence here means the first key-value pair that was pushed into the list"
+            )
+    );
+
+    registry.register_task(
+        NativeTarget::Type("DictionaryType"),
+        NativeTask::new(
+            "attemptGetAll",
+            Some(NoType),
+            vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
+            self::dictionary_attempt_get_all
+        ).doc("Attempt to get all values from a corresponding key in a dictionary. \
+                The value(s) are returned as a list if found, else nil. Use this when duplicates allowed."
+            )
     );
 
 
@@ -97,11 +112,11 @@ pub fn register_module(registry: &mut NativeRegistry) {
     registry.register_property(
         NativeTarget::Type("DictionaryType"),
         NativeProperty::new(
-            "length",
+            "count",
             Some(IntegerType),
             DictionaryType(None, None),
-            self::dictionary_length
-        )
+            self::dictionary_count
+        ).doc("Get how many key-value pairs are in this dictionary. Duplicates included")
     );
 
     registry.register_property(
@@ -111,7 +126,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(BooleanType),
             DictionaryType(None, None),
             self::dictionary_is_empty
-        )
+        ).doc("If the dictionary has no pairs, this is true")
     );
 
     registry.register_property(
@@ -121,7 +136,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(None)),
             DictionaryType(None, None),
             self::dictionary_keys
-        )
+        ).doc("Return a list of all the keys. Duplicates are ignored, meaning the returned list has only unique keys")
     );
 
     registry.register_property(
@@ -131,7 +146,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(None)),
             DictionaryType(None, None),
             self::dictionary_values
-        )
+        ).doc("Return a list of all the values. Values ignore which came from what keys, so the list can have non-unique elements")
     );
 }
 
@@ -199,13 +214,24 @@ pub fn dictionary_remove(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     let mut dict = dict.borrow_mut();
 
     // Duplicates check!
-    if let Some(allow_dups) = dict.allow_duplicates && !allow_dups {
+    if let Some(allow_dups) = dict.allow_duplicates && allow_dups {
         for index in 0..dict.keys.len() {
             let keyt = &dict.keys[index];
 
             if keyt.eq(key) {
                 dict.keys.remove(index);
                 dict.values.remove(index);
+            }
+        }
+    } else {
+        for index in 0..dict.keys.len() {
+            let keyt = &dict.keys[index];
+
+            if keyt.eq(key) {
+                dict.keys.remove(index);
+                dict.values.remove(index);
+                // Break instead
+                break;
             }
         }
     }
@@ -280,7 +306,7 @@ pub fn dictionary_allow_duplicates(vm: &mut VirtualMachine, args: Vec<Value>) ->
 
 pub fn dictionary_attempt_get(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     let [Value::Dictionary(dict), key] = args.as_slice() else {
-        panic!("Dictionary task attempGet expects a dictionary reciever and a key")
+        panic!("Dictionary task attemptGet expects a dictionary reciever and a key")
     };
     
     let dict = dict.borrow();
@@ -296,6 +322,29 @@ pub fn dictionary_attempt_get(_vm: &mut VirtualMachine, args: Vec<Value>) -> Val
     Value::Nil
 }
 
+pub fn dictionary_attempt_get_all(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
+    let [Value::Dictionary(dict), key] = args.as_slice() else {
+        panic!("Dictionary task attemptGetAll expects a dictionary reciever and a key")
+    };
+    
+    let dict = dict.borrow();
+    let mut values_found: Vec<Value> = Vec::new();
+
+    for index in 0..dict.keys.len() {
+        if &dict.keys[index] == key {
+            let found = &dict.keys[index];
+            values_found.push(found.clone()); // Only add to the list!
+        }
+    }
+    
+    if values_found.len() != 0 {
+        // Return as a list
+        Value::new_list(None, values_found);
+    }
+    // Nil fallback if none were found
+    Value::Nil
+}
+
 
 /*
     ----------------------------
@@ -304,17 +353,17 @@ pub fn dictionary_attempt_get(_vm: &mut VirtualMachine, args: Vec<Value>) -> Val
 */
 
 
-pub fn dictionary_length(_vm: &mut VirtualMachine, s_arg: Value) -> Value {
+pub fn dictionary_count(_vm: &mut VirtualMachine, s_arg: Value) -> Value {
     let dict = match s_arg {
         Value::Dictionary(dict) => dict,
 
-        _ => panic!("Dictionary property length expected a dictionary reciever")
+        _ => panic!("Dictionary property count expected a dictionary reciever")
     };
     
     let dict = dict.borrow();
-    let length = dict.keys.len(); // There will be an equal amount of keys and values!
+    let count = dict.keys.len(); // There will be an equal amount of keys and values!
     
-    Value::Integer(length as i64)
+    Value::Integer(count as i64)
 }
 
 pub fn dictionary_is_empty(_vm: &mut VirtualMachine, s_arg: Value) -> Value {
@@ -339,9 +388,16 @@ pub fn dictionary_keys(_vm: &mut VirtualMachine, s_arg: Value) -> Value {
     
     let dict = dict.borrow();
     // Iterating before cloning allows Rust to allocate a vector of the exact size before populating the vector!
+    let mut deduped: Vec<Value> = Vec::new();
     let keys: Vec<Value> = dict.keys.iter().cloned().collect();
+    for item in keys {
+        if deduped.contains(&item) {
+            continue; // Ignore duplicates
+        }
+        deduped.push(item);
+    }
     
-    Value::new_list(dict.key_type.clone(), keys)
+    Value::new_list(dict.key_type.clone(), deduped)
 }
 
 pub fn dictionary_values(_vm: &mut VirtualMachine, s_arg: Value) -> Value {

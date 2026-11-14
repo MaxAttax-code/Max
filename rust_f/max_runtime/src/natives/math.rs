@@ -19,7 +19,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_sqrt
-        )
+        ).doc("Returns the square root of the given number")
     );
 
     registry.register_task(
@@ -29,7 +29,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_cbrt
-        )
+        ).doc("Returns the cube root of the given number")
     );
 
     registry.register_task(
@@ -38,7 +38,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType), ParamSpec::required(NumberType)],
             self::math_root_of
-        )
+        ).doc("Returns the xth root of y")
     );
 
     registry.register_task(
@@ -47,7 +47,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_log10
-        )
+        ).doc("Returns the base log10 of the given number")
     );
 
     registry.register_task(
@@ -56,7 +56,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType), ParamSpec::required(NumberType)],
             self::math_log
-        )
+        ).doc("Returns log x of y")
     );
 
     registry.register_task(
@@ -65,7 +65,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_loge
-        )
+        ).doc("Returns the natural log of the given number")
     );
 
     // Holy trigonometric ratios...
@@ -76,7 +76,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_cos
-        )
+        ).doc("Gives the corresponding cosine value")
     );
 
     registry.register_task(
@@ -85,7 +85,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_sin
-        )
+        ).doc("Gives the corresponding sine value")
     );
 
     registry.register_task(
@@ -94,7 +94,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_tan
-        )
+        ).doc("Gives the corresponding tangent value")
     );
 
     registry.register_task(
@@ -103,7 +103,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_sec
-        )
+        ).doc("Gives the corresponding secant value")
     );
 
     registry.register_task(
@@ -112,7 +112,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_cosec
-        )
+        ).doc("Gives the corresponding cosecant value")
     );
 
     registry.register_task(
@@ -121,7 +121,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_cotan
-        )
+        ).doc("Gives the corresponding cotangent value")
     );
 
     registry.register_task(
@@ -130,7 +130,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_icos
-        )
+        ).doc("Gets the angle of a given cosine value")
     );
 
     registry.register_task(
@@ -139,7 +139,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_isin
-        )
+        ).doc("Gets the angle of a given sine value")
     );
 
     registry.register_task(
@@ -148,7 +148,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_itan
-        )
+        ).doc("Gets the angle of a given tangent value")
     );
 
     registry.register_task(
@@ -157,7 +157,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_isec
-        )
+        ).doc("Gets the angle of a given secant value")
     );
 
     registry.register_task(
@@ -166,7 +166,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_icosec
-        )
+        ).doc("Gets the angle of a given cosecant value")
     );
 
     registry.register_task(
@@ -175,7 +175,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_icotan
-        )
+        ).doc("Gets the angle of a given cotangent value")
     );
 
     registry.register_task(
@@ -184,7 +184,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_cosh
-        )
+        ).doc("Gives the corresponding hyperbolic cosine value")
     );
 
     registry.register_task(
@@ -193,7 +193,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_sinh
-        )
+        ).doc("Gives the corresponding hyperbolic sine value")
     );
 
     registry.register_task(
@@ -202,7 +202,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_tanh
-        )
+        ).doc("Gives the corresponding hyperbolic tangent value")
     );
 
     registry.register_task(
@@ -211,7 +211,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_icosh
-        )
+        ).doc("Gets the angle of a given hyperbolic cosine value")
     );
 
     registry.register_task(
@@ -220,7 +220,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_isinh
-        )
+        ).doc("Gets the angle of a given hyperbolic sine value")
     );
 
     registry.register_task(
@@ -229,7 +229,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_itanh
-        )
+        ).doc("Gets the angle of a given hyperbolic tangent value")
     );
 
     registry.register_task(
@@ -238,7 +238,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_reciprocal
-        )
+        ).doc("Returns 1/x")
     );
 
     registry.register_task(
@@ -247,7 +247,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_floor
-        )
+        ).doc("Returns the largest integer less than or equal to the given number")
     );
 
     registry.register_task(
@@ -256,7 +256,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_ceil
-        )
+        ).doc("Returns the smallest integer more than or equal to the given number")
     );
 
     registry.register_task(
@@ -265,7 +265,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_round
-        )
+        ).doc("Rounds a number to the nearest integer. This rounds upwards at .5")
     );
 
     registry.register_task(
@@ -274,7 +274,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(NumberType)],
             self::math_absolute
-        )
+        ).doc("Gives the absolute value of the given number")
     );
 
 
@@ -287,7 +287,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             NumberType,
             self::math_pi
-        )
+        ).doc("Returns π, the constant defined for every circle")
     );
 
     registry.register_property(
@@ -296,7 +296,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             NumberType,
             self::math_phi
-        )
+        ).doc("Returns φ, a unique constant of proportional relationship")
     );
 
     registry.register_property(
@@ -305,7 +305,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             NumberType,
             self::math_root2
-        )
+        ).doc("Gets the square root of 2")
     );
 
     registry.register_property(
@@ -314,7 +314,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             NumberType,
             self::math_eul
-        )
+        ).doc("Gets eulers number, the base of the natural logarithm")
     );
 
     registry.register_property(
@@ -323,7 +323,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             NumberType,
             self::math_speed_of_light
-        )
+        ).doc("Returns the approximate measurement of the speed of light")
     );
 }
 

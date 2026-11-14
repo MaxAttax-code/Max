@@ -19,7 +19,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(DictionaryType(Some(Box::new(StringType)), Some(Box::new(IntegerType)))),
             vec![ParamSpec::required(StringType)],
             self::iterables_count_chars
-        )
+        ).doc("Counts how many characters there are in a given string. This only counts the letters of the alphabet, \
+                and the returned dictionary has key-value pairs as letter-count."
+            )
     );
 
     registry.register_task(
@@ -28,7 +30,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(DictionaryType(Some(Box::new(StringType)), Some(Box::new(IntegerType)))),
             vec![ParamSpec::required(StringType)],
             self::iterables_count_chars_existing
-        )
+        ).doc("This counts how many characters there are in a given string, only counting the letters of the alphabet. \
+                The returned letter-count dictionary only has keys for letters that existed in the string,"
+            )
     );
 
     registry.register_task(
@@ -37,7 +41,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(DictionaryType(None, None)),
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(ListType(None))],
             self::iterables_to_dictionary
-        )
+        ).doc("Intakes a list that represents keys, and another list that represents values, and merges into a dictionary.")
     );
 
     registry.register_task(
@@ -47,7 +51,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             // NoType, since we allow both List types and Dict types
             vec![ParamSpec::required(NoType)],
             self::iterables_mode
-        )
+        ).doc("Gets the most frequently occurring item in a list or value in a dictionary. If items are as frequent as \
+                eachother, then the first most frequently occurring item found is picked."
+            )
     );
 
     registry.register_task(
@@ -56,7 +62,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(NoType),
             vec![ParamSpec::required(ListType(None))],
             self::iterables_median
-        )
+        ).doc("This finds the middle value in a list. If the list has an even amount of items, then \
+                this returns the value above the middle."
+            )
     );
 
     registry.register_task(
@@ -65,7 +73,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(ListType(Some(Box::new(NumberType))))],
             self::iterables_range
-        )
+        ).doc("Calculates the range of a list of numbers given.")
     );
 
     registry.register_task(
@@ -74,7 +82,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(ListType(None)), ParamSpec::optional(BooleanType)],
             self::iterables_in_common
-        )
+        ).doc("Intakes two lists, and returns a list of the common elements between them. An optional boolean can be given to specify if \
+                duplicate elements are allowed to be added."
+            )
     );
 
     registry.register_task(
@@ -83,7 +93,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None))],
             self::iterables_flatten
-        )
+        ).doc("Flattens a list and returns the new list. Flattening means to compress nested lists into one entire list. \
+                This works recursively, so n number of nested lists will still be flattened to one."
+            )
     );
 
     registry.register_task(
@@ -92,7 +104,11 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             vec![ParamSpec::required(ListType(None)), ParamSpec::optional(IntegerType)],
             self::iterables_permutations
-        )
+        ).doc("Gets the number of permutations in a list using nPr. Permutations attempt to get all possible ways a set \
+                of n can be ordered when r is picked from it 'r' is the number of items to be chosen from the list, \
+                and always defaults to the length of the list - 1. This errors if 'r' is larger than the list length, \
+                or if it is negative."
+            )
     );
 
     registry.register_task(
@@ -101,7 +117,11 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             vec![ParamSpec::required(ListType(None)), ParamSpec::optional(IntegerType)],
             self::iterables_combinations
-        )
+        ).doc("Gets the number of combinations in a list using nCr. Combinations do not care about the order of a permutation \
+                , meaning it often is smaller than the permutations. 'r' is the number of items to be chosen from the list, \
+                and always defaults to the length of the list - 1. This errors if 'r' is larger than the list length, \
+                or if it is negative."
+            )
     );
 
     
@@ -114,7 +134,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(Some(Box::new(StringType)))),
             StringType,
             self::iterables_alphabet
-        )
+        ).doc("Returns a list of the alphabet in lowercase, from a-z.")
     );
 }
 
@@ -389,10 +409,10 @@ pub fn iterables_permutations(_vm: &mut VirtualMachine, args: Vec<Value>) -> Val
         None => None
     };
 
-    // The 'r' in the permutations formula
-    // Always defaults to 2
-    let r = count.unwrap_or(2);
     let n = list.items.len() as i64;
+    // The 'r' in the permutations formula
+    // Always defaults to the length of the items - 1 (since we don't want to divide by 0!)
+    let r = count.unwrap_or(n - 1);
 
     // Quick little fn to msg about an overflow
     let overflow = || -> ! {
@@ -499,7 +519,7 @@ fn count(character_find: char, str: &String) -> usize {
 /// 
 /// The formula is performed with overflow safety. If the result is an overflow, return none
 fn factorial_checked(num: i64) -> Option<i64> {
-    (1..=num).try_fold(1i64, |acc, f| acc.checked_mul(f))
+    (1..=num).try_fold(1_i64, |acc, f| acc.checked_mul(f))
 }
 
 fn flatten(list: Vec<Value>) -> Vec<Value> {

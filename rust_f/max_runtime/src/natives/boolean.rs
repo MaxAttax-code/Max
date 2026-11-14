@@ -21,7 +21,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(BooleanType), ParamSpec::required(TaskType(0))],
             self::boolean_then
-        )
+        ).doc("Intakes a lambda that is called when the boolean is true")
     );
     
     registry.register_task(
@@ -31,7 +31,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(BooleanType), ParamSpec::required(TaskType(0))],
             self::boolean_else
-        )
+        ).doc("Intakes a lambda that is called when the boolean is false")
     );
     
     registry.register_task(
@@ -41,7 +41,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(BooleanType), ParamSpec::required(TaskType(0)), ParamSpec::required(TaskType(0))],
             self::boolean_match
-        )
+        ).doc("Allows providing a lambda for both the true and false possibilities")
     );
     
     registry.register_task(
@@ -51,11 +51,11 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(BooleanType), ParamSpec::Optional(Some(StringType))],
             self::boolean_expect
-        )
+        ).doc("Errors and terminates the program and gives back feedback if needed")
     );
 
 
-    // ----- REGISTERING TASKS ----- \\
+    // ----- REGISTERING PROPS ----- \\
 }
 
 

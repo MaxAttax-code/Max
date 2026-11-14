@@ -75,7 +75,9 @@ pub struct NativeTask {
     pub name: String,
     pub return_type: Option<MaxType>,
     pub parameter_types: Vec<ParamSpec>,
-    pub function: Nativefn
+    pub function: Nativefn,
+    /// This is documentation on the task, not any document name
+    pub doc: &'static str
 }
 
 impl NativeTask {
@@ -101,6 +103,7 @@ impl NativeTask {
             return_type,
             parameter_types,
             function,
+            doc: ""
         }
     }
 
@@ -236,6 +239,12 @@ impl NativeTask {
             }
         }
     }
+
+    /// Mutates the `doc` field and returns the updated task.
+    fn doc(mut self, doc: &'static str) -> Self {
+        self.doc = doc;
+        self
+    }
 }
 
 /// A structure for a Native Property. In order to get it, you must call it's getter fn
@@ -245,6 +254,8 @@ pub struct NativeProperty {
     pub return_type: Option<MaxType>,
     pub self_argument: MaxType,
     pub getter: NativePropfn,
+    /// This is documentation on the property, not any document name
+    pub doc: &'static str
 }
 
 impl NativeProperty {
@@ -252,13 +263,14 @@ impl NativeProperty {
         name: &str,
         return_type: Option<MaxType>,
         self_argument: MaxType,
-        getter: self::NativePropfn,
+        getter: self::NativePropfn
     ) -> Self {
         Self {
             name: name.to_string(),
             return_type,
             self_argument,
             getter,
+            doc: ""
         }
     }
 
@@ -268,6 +280,12 @@ impl NativeProperty {
                     self.name, self.self_argument, target);
         }
         (self.getter)(vm, target)
+    }
+
+    /// Mutates the `doc` field and returns the updated property.
+    fn doc(mut self, doc: &'static str) -> Self {
+        self.doc = doc;
+        self
     }
 }
 
@@ -286,6 +304,14 @@ pub struct NativeRegistry {
     native_functions: HashMap<String, NativeTask>,
     native_properties: HashMap<String, NativeProperty>,
     static_modules: HashSet<String>
+}
+
+pub struct MemberInfo {
+    pub name: String,
+    pub is_property: bool,
+    pub params: Vec<ParamSpec>,
+    pub return_type: Option<MaxType>,
+    pub doc: &'static str
 }
 
 impl NativeRegistry {
@@ -404,5 +430,29 @@ impl NativeRegistry {
 
         // Format as target.name
         format!("{}.{}", target.unwrap(), name)
+    }
+
+    /// Gets the members of a type key like 'StringType' or a static module like 'math'.
+    /// This includes both tasks and properties
+    pub fn members_of(&self, target: &str) -> Vec<MemberInfo> {
+        let prefix = format!("{target}.");
+        let skip_self = if self.is_static_module(target.to_string()) { 0 } else { 1 };
+
+        let tasks = self.native_functions.iter().filter_map(|(key, task)| {
+            key.strip_prefix(&prefix)?;
+            Some(MemberInfo {
+                name: task.name.clone(),
+                is_property: false,
+                params: task.parameter_types.iter().skip(skip_self).cloned().collect(),
+                return_type: task.return_type.clone(),
+                doc: task.doc,
+            })
+        });
+        let props = self.native_properties.iter().filter_map(|(key, prop)| {
+            key.strip_prefix(&prefix)?;
+            Some(MemberInfo { name: prop.name.clone(), is_property: true, params: vec![],
+                              return_type: prop.return_type.clone(), doc: prop.doc })
+        });
+        tasks.chain(props).collect()
     }
 }

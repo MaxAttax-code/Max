@@ -18,7 +18,10 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(StringType),
             vec![ParamSpec::optional(StringType)],
             self::global_input
-        )
+        ).doc("Accepts an input from the user using stdin. \
+                This only accepts valid UTF-8 characters, and whitespaces at the beginning and end are trimmed. \
+                An optional string output message can be given, which will be printed before accepting an input."
+            )
     );
 
     registry.register_task(
@@ -28,7 +31,10 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(PossibleType), ParamSpec::required(TaskType(0))],
             self::global_when
-        )
+        ).doc("Intakes a possible and a lambda condition, applying the condition to the possible. \
+                Should the lambda condition ever change, the possible value will be reevaluated. \
+                To stop condition-evaluation for the given possible, use freeze()."
+            )
     );
 
     registry.register_task(
@@ -38,7 +44,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(PossibleType)],
             self::global_freeze
-        )
+        ).doc("Freezes a possible so long as it has a condition attached and has been resolved. \
+                Attempting to freeze a possible that has not been evaluated will error."
+            )
     );
 
     registry.register_task(
@@ -48,7 +56,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::optional(StringType)],
             self::global_error
-        )
+        ).doc("Calls an error on the machine, printing out a message if given, and exitting the terminal.")
     );
 }
 

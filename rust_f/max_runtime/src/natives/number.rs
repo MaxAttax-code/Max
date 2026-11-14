@@ -18,7 +18,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(FloatType)],
             self::number_abs
-        )
+        ).doc("Returns the absolute value of this float")
     );
 
     registry.register_task(
@@ -28,7 +28,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             vec![ParamSpec::required(IntegerType)],
             self::number_abs
-        )
+        ).doc("Returns the absolute value of this integer")
     );
 
     registry.register_task(
@@ -38,7 +38,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(FloatType)],
             self::number_to_string
-        )
+        ).doc("Returns this float as a string")
     );
     
     registry.register_task(
@@ -48,7 +48,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             vec![ParamSpec::required(IntegerType)],
             self::number_to_string
-        )
+        ).doc("Returns this integer as a string")
     );
     
     registry.register_task(
@@ -58,7 +58,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(FloatType), ParamSpec::required(FloatType), ParamSpec::required(FloatType)],
             self::number_clamp
-        )
+        ).doc("Returns this float clamped between a and b")
     );
     
     registry.register_task(
@@ -68,7 +68,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             vec![ParamSpec::required(IntegerType), ParamSpec::required(IntegerType), ParamSpec::required(IntegerType)],
             self::number_clamp
-        )
+        ).doc("Returns this integer clamped between a and b")
     );
     
     registry.register_task(
@@ -78,7 +78,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(FloatType), ParamSpec::required(IntegerType)],
             self::float_round
-        )
+        ).doc("Rounds this float to the nearest decimal place given")
     );
 
 
@@ -92,7 +92,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(BooleanType),
             IntegerType,
             self::integer_is_even
-        )
+        ).doc("True if the integer is even")
     );
 
     registry.register_property(
@@ -102,7 +102,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(BooleanType),
             IntegerType,
             self::integer_is_odd
-        )
+        ).doc("True if the integer is odd")
     );
 
     registry.register_property(
@@ -112,7 +112,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             FloatType,
             self::float_decimal_places
-        )
+        ).doc("Returns how many decimal places this float holds, excluding trailing zeros")
     );
 }
 

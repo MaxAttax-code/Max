@@ -20,7 +20,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(BooleanType),
             vec![ParamSpec::required(IntegerType)],
             self::datetime_is_leap_year
-        )
+        ).doc("If the current year is a leap year, returns true. A leap year is a year that is \
+                divisible by 4, but not divisible by 100 UNLESS it is divisible by 400"
+            )
     );
 
     registry.register_task(
@@ -29,7 +31,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             vec![ParamSpec::required(FloatType)],
             self::datetime_time_since
-        )
+        ).doc("Calculates the time period between a given time in seconds and now. The returned number is in seconds")
     );
 
     registry.register_task(
@@ -38,7 +40,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(StringType),
             vec![ParamSpec::required(FloatType)],
             self::datetime_format_date
-        )
+        ).doc("Formats a date from the given seconds amount. This follows the ISO 8901 format as: Year-Month-Day")
     );
 
     
@@ -51,7 +53,10 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(FloatType),
             FloatType,
             self::datetime_current_utc
-        )
+        ).doc("Gets the current UTC time in seconds. Although being given in seconds leaves an unfavourably large number, \
+                many datetime tasks require parameters to be in seconds. Despite this being a property, this returns the \
+                UTC time at the point it was called, so calling this in different sections of your code can give different results."
+            )
     );
 
     registry.register_property(
@@ -60,7 +65,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(StringType),
             StringType,
             self::datetime_string_current_utc
-        )
+        ).doc("Gets the current UTC time and formats it into `hours-minutes-seconds`. This is the time since the UNIX EPOCH")
     );
 }
 

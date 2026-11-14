@@ -18,7 +18,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(StringType),
             vec![ParamSpec::required(StringType)],
             self::string_to_upper
-        )
+        ).doc("Returns this string's characters all in uppercase. This does not handle language specific casing")
     );
 
     registry.register_task(
@@ -28,7 +28,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(StringType),
             vec![ParamSpec::required(StringType)],
             self::string_to_lower
-        )
+        ).doc("Returns this string's characters all in lowercase. This does not handle language specific casing")
     );
 
     registry.register_task(
@@ -38,7 +38,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(StringType),
             vec![ParamSpec::required(StringType)],
             self::string_trim
-        )
+        ).doc("Trims the leading and trailing whitespace")
     );
 
     registry.register_task(
@@ -48,7 +48,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(BooleanType),
             vec![ParamSpec::required(StringType), ParamSpec::required(StringType)],
             self::string_contains
-        )
+        ).doc("Checks if the given substring is contained in this")
     );
 
     registry.register_task(
@@ -58,7 +58,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(Some(Box::new(StringType)))),
             vec![ParamSpec::required(StringType), ParamSpec::required(StringType)],
             self::string_split
-        )
+        ).doc("Splits the string at each occurrence of the given delimiter, adding the substring (delimiter non-inclusive) to a list, and returning said list")
     );
 
     registry.register_task(
@@ -68,7 +68,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(Some(Box::new(StringType)))),
             vec![ParamSpec::required(StringType)],
             self::string_to_characters
-        )
+        ).doc("Returns a list of all characters within the string, ignoring byte size. All characters are string types in Max")
     );
 
     registry.register_task(
@@ -78,7 +78,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(StringType),
             vec![ParamSpec::required(StringType), ParamSpec::required(StringType), ParamSpec::required(StringType)],
             self::string_replace
-        )
+        ).doc("Replace all occurrences of a substring within this string with the given replacer")
     );
 
     registry.register_task(
@@ -88,7 +88,10 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(StringType),
             vec![ParamSpec::required(StringType), ParamSpec::variadic_none()],
             self::string_format
-        )
+        ).doc("Formats this string in a unique way. All found occurrences of '||' within the string are marked as formattable. \
+                For each formattable slice found, a corresponding argument that will replace the formatter in the string must be given. \
+                This returns the new formatted string, not modifying this string in-place"
+            )
     );
 
 
@@ -102,7 +105,17 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(BooleanType),
             StringType,
             self::string_is_empty
-        )
+        ).doc("True if the string has a length of 0")
+    );
+
+    registry.register_property(
+        NativeTarget::Type("StringType"),
+        NativeProperty::new(
+            "isBlank",
+            Some(BooleanType),
+            StringType,
+            self::string_is_blank
+        ).doc("True if the string is empty or has only whitespaces")
     );
 
     registry.register_property(
@@ -112,7 +125,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             StringType,
             self::string_length
-        )
+        ).doc("Gets the string length; NOT as bytes, but character counts.")
     );
 }
 
@@ -216,7 +229,7 @@ pub fn string_format(_vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     /*
         Gets string reciever
         Gets all the given arguments to format with into a list
-        Replaces all '{}' with the corresponding argument in the list
+        Replaces all '||' with the corresponding argument in the list
         Returns the new string, not modified in place!
     */
 
@@ -285,8 +298,21 @@ pub fn string_is_empty(_vm: &mut VirtualMachine, s_arg: Value) -> Value {
 
         _ => panic!("Invalid self argument for toUpper: {}", s_arg)
     };
-    // Use chars().count() as len() counts bytes, which is not the standard 'human' way of reading strings
+
     let check = string.is_empty();
+
+    Value::Boolean(check)
+}
+
+pub fn string_is_blank(_vm: &mut VirtualMachine, s_arg: Value) -> Value {
+    let string = match s_arg {
+        Value::String(s) => s,
+
+        _ => panic!("Invalid self argument for toUpper: {}", s_arg)
+    };
+
+    // That little trim() means whitespaces-only strings are also blank!
+    let check = string.trim().is_empty();
 
     Value::Boolean(check)
 }
@@ -297,7 +323,7 @@ pub fn string_length(_vm: &mut VirtualMachine, s_arg: Value) -> Value {
 
         _ => panic!("Invalid self argument for toUpper: {}", s_arg)
     };
-    // Use chars().count() as len() counts bytes, which is not the standard 'human' way of reading strings
+    // Use chars().count(), as len() counts bytes, which is not the standard 'human' way of reading strings
     let length = string.chars().count();
 
     Value::Integer(length as i64)

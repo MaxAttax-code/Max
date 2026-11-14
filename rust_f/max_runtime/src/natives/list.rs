@@ -18,7 +18,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(ListType(None)), ParamSpec::required_none()],
             self::list_add
-        )
+        ).doc("Pushes an item into the back of the list. List element types come into play here")
     );
     
     registry.register_task(
@@ -28,7 +28,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(ListType(None)), ParamSpec::variadic_none()],
             self::list_add_range
-        )
+        ).doc("Pass as many arguments as needed to add all into the back of the list, in order of the arguments")
     );
     
     registry.register_task(
@@ -38,9 +38,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(ListType(None))],
             self::list_concatenate
-        )
+        ).doc("Merges this list with another, where the other lists items are appended to the back of this one")
     );
-    
     
     registry.register_task(
         NativeTarget::Type("ListType"),
@@ -49,8 +48,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(ListType(None))],
             self::list_combine
-        )
+        ).doc("Merges this list and another, preventing any overlaying items from being added")
     );
+
     registry.register_task(
         NativeTarget::Type("ListType"),
         NativeTask::new(
@@ -58,7 +58,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(IntegerType), ParamSpec::required_none()],
             self::list_insert
-        )
+        ).doc("Insert an item at the given index of the list. This errs if the index is out of bounds")
     );
     
     registry.register_task(
@@ -68,7 +68,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(IntegerType)],
             self::list_remove_at
-        )
+        ).doc("Removes the item at the given index of this list. If the index points to nothing, then nothing is done")
     );
     
     registry.register_task(
@@ -78,7 +78,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(IntegerType)],
             self::list_trim_excess
-        )
+        ).doc("Removes all elements from the list that are after the given index")
     );
     
     registry.register_task(
@@ -88,7 +88,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None))],
             self::list_copy
-        )
+        ).doc("Directly copies this list and returns as a value. No types are specified for the copy")
     );
     
     registry.register_task(
@@ -98,7 +98,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(BooleanType),
             vec![ParamSpec::required(ListType(None)), ParamSpec::required_none()],
             self::list_contains
-        )
+        ).doc("Checks if the list contains the given element. The list element type does not hinder this process at all")
     );
     
     registry.register_task(
@@ -108,7 +108,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             vec![ParamSpec::required(ListType(None))],
             self::list_clear
-        )
+        ).doc("Clears the entire list, removing all elements")
     );
     
     registry.register_task(
@@ -118,7 +118,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None))],
             self::list_reverse
-        )
+        ).doc("Returns the list with it's order flipped, where items at the back and front switch places. An item in the middle of an odd-amount list stays the same")
     );
     
     registry.register_task(
@@ -128,7 +128,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(StringType),
             vec![ParamSpec::required(ListType(None)), ParamSpec::optional(StringType)],
             self::list_join
-        )
+        ).doc("Joins all items within the list into a string. An optional delimiter can be given to seperate each item")
     );
 
     registry.register_task(
@@ -138,7 +138,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(TaskType(0))], // Please note the arity within 'TaskType' does not matter!
             self::list_map
-        )
+        ).doc("Maps each item in the list with the given lambda. This does not mutate it in-place")
     );
 
     registry.register_task(
@@ -148,7 +148,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(TaskType(0))],
             self::list_filter
-        )
+        ).doc("Returns the list with all elements filtered by a given lambda. The lambda must return a boolean, where true means the item is preserved, and false means the item is thrown away")
     );
 
     registry.register_task(
@@ -158,7 +158,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(DictionaryType(Some(Box::new(IntegerType)), None)), // We do guarantee than the enumerator keys are integers!
             vec![ParamSpec::required(ListType(None))],
             self::list_get_enumerator
-        )
+        ).doc("Returns a dictionary of this list, where the keys are the enumerated counters, and the values the items of the list")
     );
 
     registry.register_task(
@@ -168,7 +168,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType), // We do guarantee than the enumerator keys are integers!
             vec![ParamSpec::required(ListType(None)), ParamSpec::required_none()],
             self::list_find_index
-        )
+        ).doc("Finds the integer index of the first occurrence of the given item within this list")
     );
 
 
@@ -182,7 +182,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(IntegerType),
             ListType(None),
             self::list_length
-        )
+        ).doc("Returns the list length. This is not 0-based, so the first count is always 1")
     );
     
     registry.register_property(
@@ -192,7 +192,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(BooleanType),
             ListType(None),
             self::list_is_empty
-        )
+        ).doc("If the list is empty or not")
     );
     
     registry.register_property(
@@ -202,7 +202,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             ListType(None),
             self::list_first
-        )
+        ).doc("Gets the first element of the list. An empty list returns nil for this")
     );
     
     registry.register_property(
@@ -212,7 +212,7 @@ pub fn register_module(registry: &mut NativeRegistry) {
             None,
             ListType(None),
             self::list_last
-        )
+        ).doc("Gets the last element of the list. An empty list returns nil for this")
     );
 }
 
@@ -338,6 +338,10 @@ pub fn list_insert(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
         VirtualMachine::ensure_compatibility(element_type, item);
     }
 
+    if *index as usize > list.items.len() {
+        panic!("List task insert errored: Index given was larger than the lists length")
+    }
+
     list.items.insert(*index as usize, item.clone());
     drop(list);
 
@@ -351,6 +355,10 @@ pub fn list_remove_at(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     };
 
     let mut list = list.borrow_mut();
+
+    if *index as usize > list.items.len() {
+        return Value::Nil
+    }
 
     list.items.remove(*index as usize);
     drop(list);
