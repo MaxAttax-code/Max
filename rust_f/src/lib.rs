@@ -323,7 +323,7 @@ pub struct MemberAccessOperand {
 
 
 /// The structure of a parameter within Task creation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     pub name: String,
     pub parameter_kind: ParamKind
@@ -407,7 +407,7 @@ pub struct Chunk {
 pub struct LambdaOperand {
     pub id: u64,
     pub arity: u64,
-    pub parameters: Vec<String>,
+    pub parameters: Vec<Parameter>,
     pub captured: Vec<String>,
     pub chunk: std::sync::Arc<Chunk>
 }
@@ -436,4 +436,10 @@ pub struct Bytecode {
     pub tasks: Arc<HashMap<String, TaskInfo>>,
     pub coroutines: Arc<HashMap<String, CoroutineInfo>>,
     pub enums: Arc<HashMap<String, EnumStructure>>
+}
+
+impl Bytecode {
+    pub fn empty() -> Self {
+        Bytecode { instructions: Arc::default(), tasks: Arc::default(), coroutines: Arc::default(), enums: Arc::default() }
+    }
 }
