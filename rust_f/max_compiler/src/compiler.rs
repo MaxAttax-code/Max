@@ -6,10 +6,10 @@ use std::{
 
 use max_bytecode::self as bc;
 
-use crate::{ast::*, error::MaxError};
+use crate::{ast::*, error::MaxDiagnostic};
 
-fn error(span: Span, message: impl Into<String>) -> MaxError {
-    MaxError::Syntax { message: message.into(), line: span.line, column: span.column }
+fn error(span: Span, code: &'static str, message: impl Into<String>) -> MaxDiagnostic {
+    MaxDiagnostic::new(crate::error::Severity::Error, code, message.into(), span)
 }
 
 // ---------------------------- //
@@ -203,6 +203,11 @@ struct EnumNode<'s> {
 #[derive(Clone)]
 struct EventHandler { task_name: String, parameter_count: usize }
 
+pub struct CompileOutput {
+    pub bytecode: Option<bc::Bytecode>,
+    pub diagnostics: Vec<MaxDiagnostic>
+}
+
 pub struct Compiler<'a> {
     /// Our CompileContext for the Compiler
     ctx: &'a CompileContext,
@@ -211,6 +216,9 @@ pub struct Compiler<'a> {
 
     /// All the OpCodes for the `VirtualMachine` to read
     ops: Vec<bc::Op>,
+    /// All the Diagnostics to be sent to the LSP
+    diagnostics: Vec<MaxDiagnostic>,
+
     tasks: HashMap<String, bc::TaskInfo>,
     local_tasks: HashMap<String, Vec<ParamSig>>,
 
@@ -246,6 +254,7 @@ impl<'a> Compiler<'a> {
             module_name,
             dependencies,
             ops: Vec::new(),
+            diagnostics: Vec::new(),
             tasks: HashMap::new(),
             local_tasks: HashMap::new(),
             coroutines: HashMap::new(),
@@ -271,6 +280,7 @@ impl<'a> Compiler<'a> {
             module_name: self.module_name,
             dependencies: self.dependencies,
             ops: Vec::new(),
+            diagnostics: Vec::new(),
             tasks: self.tasks.clone(),
             local_tasks: self.local_tasks.clone(),
             coroutines: self.coroutines.clone(),
@@ -286,7 +296,9 @@ impl<'a> Compiler<'a> {
 
     /// Compiles from the given array of statements.
     /// This is also where all local fields are filled
-    pub fn compile(mut self, statements: &[Statement]) -> Result<bc::Bytecode, MaxError> {
+    pub fn compile(mut self, statements: &[Statement]) -> CompileOutput {
+        let mut diagnostics: Vec<MaxDiagnostic> = Vec::new();
+
         // Pass 1: learn every top-level enum, so types and member chains can refer to enums defined later
         for statement in statements {
             if let StatementKind::Enum(definition) = &statement.kind {
@@ -307,14 +319,20 @@ impl<'a> Compiler<'a> {
         // Pass 2: emit all enum definitions first, so they exist before any code runs
         for statement in statements {
             if let StatementKind::Enum(definition) = &statement.kind {
-                self.compile_enum_definition(definition)?;
+                match self.compile_enum_definition(definition) {
+                    Ok(_) => {},
+                    Err(d) => diagnostics.push(d),
+                };
             }
         }
 
         // Pass 3: everything else, in order
         for statement in statements {
             if !matches!(statement.kind, StatementKind::Enum(_)) {
-                self.compile_statement(statement)?;
+                match self.compile_statement(statement) {
+                    Ok(_) => {},
+                    Err(d) => diagnostics.push(d),
+                };
             }
         }
 
@@ -326,12 +344,14 @@ impl<'a> Compiler<'a> {
             self.emit_event_dispatcher(&name, &handlers);
         }
 
-        Ok(bc::Bytecode {
+        let bytecode = bc::Bytecode {
             instructions: Arc::new(self.ops),
             tasks: Arc::new(self.tasks),
             coroutines: Arc::new(self.coroutines),
             enums: Arc::new(self.enums),
-        })
+        };
+
+        CompileOutput { bytecode: Some(bytecode), diagnostics }
     }
 
     // ---------------------------- //
@@ -373,15 +393,25 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn compile_statements(&mut self, statements: &[Statement]) -> Result<(), MaxError> {
+    fn compile_statements(&mut self, statements: &[Statement]) -> Result<(), MaxDiagnostic> {
         for statement in statements {
-            self.compile_statement(statement)?;
+            // Remember compiler state, since an early `?` can skip cleanup
+            let scopes = self.variable_scopes.len();
+            let task_depth = self.task_depth.clone();
+            let jumps = self.jump_contexts.len();
+
+            if let Err(diagnostic) = self.compile_statement(statement) {
+                self.diagnostics.push(diagnostic);
+                self.variable_scopes.truncate(scopes);
+                self.task_depth = task_depth;
+                self.jump_contexts.truncate(jumps);
+            }
         }
         Ok(())
     }
 
     /// `EnterScope`, the body, `ExitScope`, with the compiler's own scopes kept in step
-    fn compile_scoped_block(&mut self, body: &[Statement]) -> Result<(), MaxError> {
+    fn compile_scoped_block(&mut self, body: &[Statement]) -> Result<(), MaxDiagnostic> {
         self.emit(bc::Op::EnterScope);
         self.enter_compiler_scope();
         self.compile_statements(body)?;
@@ -404,10 +434,10 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles a `break` by closing all scopes up to `break_depth` of the last `JumpContext` in `jump_contexts`
-    fn compile_break(&mut self, span: Span) -> Result<(), MaxError> {
+    fn compile_break(&mut self, span: Span) -> Result<(), MaxDiagnostic> {
         // Smart checking by seeing if the break depth in the last jump context exists
         let Some(target) = self.jump_contexts.last().map(|c| c.break_depth) else {
-            return Err(error(span, "'break' can only be used inside a loop or a match statement"));
+            return Err(error(span, "break-outside-loop", "'break' can only be used inside a loop or a match statement"));
         };
 
         // Close every scope opened since the target, then leave
@@ -422,11 +452,11 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a `skip` by closing the scopes currently opened and going to the beginning of a loop again.
     /// Match statements are ignored, so instead the nearest loop is skipped
-    fn compile_skip(&mut self, span: Span) -> Result<(), MaxError> {
+    fn compile_skip(&mut self, span: Span) -> Result<(), MaxDiagnostic> {
         // A match is stepped over: `skip` belongs to the nearest enclosing loop, so matches are just totally done for!
         // Yes, keep in mind using `rposition` means we don't just check one position in the contexts!
         let Some(index) = self.jump_contexts.iter().rposition(|c| c.kind == JumpKind::Loop) else {
-            return Err(error(span, "'skip' can only be used inside a loop"));
+            return Err(error(span, "skip-outside-loop", "'skip' can only be used inside a loop"));
         };
 
         // Close the blowin scopes...
@@ -485,7 +515,7 @@ impl<'a> Compiler<'a> {
     // ---------- TYPES ----------- //
     // ---------------------------- //
 
-    fn convert_type(&self, type_ref: &TypeRef, span: Span) -> Result<bc::MaxType, MaxError> {
+    fn convert_type(&self, type_ref: &TypeRef, span: Span) -> Result<bc::MaxType, MaxDiagnostic> {
         Ok(match type_ref {
             TypeRef::Int => bc::MaxType::IntegerType,
             TypeRef::Float => bc::MaxType::FloatType,
@@ -511,21 +541,21 @@ impl<'a> Compiler<'a> {
 
             TypeRef::Named(name) => {
                 if self.find_enum_members(name).is_none() {
-                    return Err(error(span, format!("Unknown type '{name}'")));
+                    return Err(error(span, "unknown-type", format!("Unknown type '{name}'")));
                 }
                 bc::MaxType::EnumType(name.clone())
             }
         })
     }
 
-    fn convert_optional_type(&self, type_ref: &Option<Spanned<TypeRef>>) -> Result<Option<bc::MaxType>, MaxError> {
+    fn convert_optional_type(&self, type_ref: &Option<Spanned<TypeRef>>) -> Result<Option<bc::MaxType>, MaxDiagnostic> {
         match type_ref {
             Some(spanned) => Ok(Some(self.convert_type(&spanned.node, spanned.span)?)),
             None => Ok(None),
         }
     }
 
-    fn convert_parameters(&self, parameters: &[Parameter]) -> Result<Vec<bc::Parameter>, MaxError> {
+    fn convert_parameters(&self, parameters: &[Parameter]) -> Result<Vec<bc::Parameter>, MaxDiagnostic> {
         parameters
             .iter()
             .map(|p| {
@@ -537,7 +567,7 @@ impl<'a> Compiler<'a> {
                     ParameterKind::Variadic => bc::ParamKind::Variadic(typing),
                 };
 
-                Ok(bc::Parameter { name: p.name.clone(), parameter_kind })
+                Ok(bc::Parameter { name: p.name.node.clone(), parameter_kind })
             })
             .collect()
     }
@@ -581,7 +611,7 @@ impl<'a> Compiler<'a> {
     /// * `span`: where to point the "missing argument" error
     /// * `event`: true when binding an `emit`
     fn bind_arguments(&self, callee: &str, params: &[ParamSig], args: &[Argument], span: Span, event: bool)
-        -> Result<Binding, MaxError>
+        -> Result<Binding, MaxDiagnostic>
     {
         // Step by Step! \\
         // First check if a variadic exists, then the *fixed* params if it does exist!
@@ -598,18 +628,18 @@ impl<'a> Compiler<'a> {
             // If more than one match is found, that's nonesensical!
             let matches = fixed_params.iter().filter(|p| p.name == named.node).count();
             if matches > 1 {
-                return Err(error(named.span, format!(
+                return Err(error(named.span, "binded-parameter-handler-overload", format!(
                     "'{}' names a parameter in more than one handler of '{callee}', so it can't be used as a name", named.node)));
             }
 
             // Or just does not exist?
             let Some(slot) = fixed_params.iter().position(|p| p.name == named.node) else {
-                return Err(error(named.span, format!("'{callee}' has no parameter called '{}'", named.node)));
+                return Err(error(named.span, "missing-binded-parameter", format!("'{callee}' has no parameter called '{}'", named.node)));
             };
 
             // Already?
             if fixed[slot].is_some() {
-                return Err(error(named.span, format!("Parameter '{}' was given more than once", named.node)));
+                return Err(error(named.span, "binding-parameter-overload", format!("Parameter '{}' was given more than once", named.node)));
             }
             // When all checks pass
             fixed[slot] = Some(i);
@@ -634,8 +664,8 @@ impl<'a> Compiler<'a> {
                 // No slot, but it's variadic
                 None if has_variadic => variadic.push(i),
                 // Random bs go?
-                None => return Err(error(arg.value.span, format!(
-                    "'{callee}' takes at most {} argument(s), but more were given", fixed_params.len()))),
+                None => return Err(error(arg.value.span, "task-parameter-overload", format!(
+                                "'{callee}' takes at most {} argument(s), but more were given", fixed_params.len()))),
             }
         }
 
@@ -643,7 +673,7 @@ impl<'a> Compiler<'a> {
         if !event /* Events ignore missing params anyway */ {
             for (slot, p) in fixed_params.iter().enumerate() {
                 if fixed[slot].is_none() && matches!(p.kind, ParameterKind::Required) {
-                    return Err(error(span, format!("Missing argument for parameter '{}' of '{callee}'", p.name)));
+                    return Err(error(span, "missing-task-argument", format!("Missing argument for parameter '{}' of '{callee}'", p.name)));
                 }
             }
         }
@@ -672,17 +702,17 @@ impl<'a> Compiler<'a> {
     }
 
     /// A member's children: its inline sub members, or the members of the enum it references
-    fn sub_members_of<'s>(&'s self, member: &'s EnumMember, span: Span) -> Result<&'s [EnumMember], MaxError> {
+    fn sub_members_of<'s>(&'s self, member: &'s EnumMember, span: Span) -> Result<&'s [EnumMember], MaxDiagnostic> {
         match &member.sub_enum_reference {
             Some(reference) => self.find_enum_members(reference).ok_or_else(|| {
-                error(span, format!("Sub enum '{reference}' referenced by '{}' was not found", member.name))
+                error(span, "missing-submembers", format!("Sub enum '{reference}' referenced by '{}' was not found", member.name))
             }),
             None => Ok(member.sub_members.as_slice()),
         }
     }
 
     /// Works out what an expression refers to inside the enum hierarchy, one step at a time
-    fn resolve_enum_node<'s>(&'s self, expression: &'s Expression) -> Result<Option<EnumNode<'s>>, MaxError> {
+    fn resolve_enum_node<'s>(&'s self, expression: &'s Expression) -> Result<Option<EnumNode<'s>>, MaxDiagnostic> {
         match &expression.kind {
             // ItemType
             ExpressionKind::Variable(name) if !self.is_variable_declared(name) => Ok(self
@@ -712,7 +742,7 @@ impl<'a> Compiler<'a> {
                     .children
                     .iter()
                     .find(|m| m.name == *member)
-                    .ok_or_else(|| error(expression.span, format!("'{member}' is not a member of '{}'", parent.path)))?;
+                    .ok_or_else(|| error(expression.span, "missing-submember", format!("'{member}' is not a member of '{}'", parent.path)))?;
 
                 Ok(Some(EnumNode {
                     kind: NodeKind::Member,
@@ -730,12 +760,12 @@ impl<'a> Compiler<'a> {
         target: &Expression,
         member: &str,
         span: Span,
-    ) -> Result<bc::MemberAccessType, MaxError> {
+    ) -> Result<bc::MemberAccessType, MaxDiagnostic> {
         // Take in steps, just don't trip!
         // 1. An enum definition or an enum member
         if let Some(node) = self.resolve_enum_node(target)? {
             if !node.children.iter().any(|m| m.name == member) {
-                return Err(error(span, format!("'{member}' is not a member of '{}'", node.path)));
+                return Err(error(span, "missing-enum-member", format!("'{member}' is not a member of '{}'", node.path)));
             }
             return Ok(match node.kind {
                 NodeKind::Definition => bc::MemberAccessType::Enum,
@@ -762,10 +792,10 @@ impl<'a> Compiler<'a> {
         Ok(bc::MemberAccessType::None)
     }
 
-    fn compile_enum_definition(&mut self, definition: &EnumDefinition) -> Result<(), MaxError> {
+    fn compile_enum_definition(&mut self, definition: &EnumDefinition) -> Result<(), MaxDiagnostic> {
         if self.has_duplicate_naming(&definition.identifier) {
             return Err(error(
-                definition.name_span,
+                definition.name_span, "duplicate-enum-name",
                 format!("Duplicate naming found when attempting to create enum '{}'", definition.identifier),
             ));
         }
@@ -789,14 +819,14 @@ impl<'a> Compiler<'a> {
         enum_name: &str,
         parent_path: &[String],
         members: &[EnumMember],
-    ) -> Result<Vec<bc::EnumMember>, MaxError> {
+    ) -> Result<Vec<bc::EnumMember>, MaxDiagnostic> {
         let mut seen: HashSet<&str> = HashSet::new();
         let mut built = Vec::with_capacity(members.len());
 
         for member in members {
             if !seen.insert(member.name.as_str()) {
                 return Err(error(
-                    member.span,
+                    member.span, "duplicate-enum-member",
                     format!("Duplicate enum member found '{}' in '{enum_name}'", member.name),
                 ));
             }
@@ -804,7 +834,8 @@ impl<'a> Compiler<'a> {
             if let Some(reference) = &member.sub_enum_reference
                 && self.find_enum_members(reference).is_none()
             {
-                return Err(error(member.span, format!("Sub enum '{reference}' was not found")));
+                return Err(error(member.span, "missing-subenum-reference",
+                        format!("Sub enum '{reference}' was not found")));
             }
 
             let mut path = parent_path.to_vec();
@@ -827,7 +858,7 @@ impl<'a> Compiler<'a> {
     // -------- STATEMENTS -------- //
     // ---------------------------- //
 
-    fn compile_statement(&mut self, statement: &Statement) -> Result<(), MaxError> {
+    fn compile_statement(&mut self, statement: &Statement) -> Result<(), MaxDiagnostic> {
         match &statement.kind {
             // Only provides dependencies, nothing to emit
             StatementKind::Using(_) => {}
@@ -864,11 +895,11 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_declaration(&mut self, declaration: &Declaration) -> Result<(), MaxError> {
+    fn compile_declaration(&mut self, declaration: &Declaration) -> Result<(), MaxDiagnostic> {
         if self.task_depth.len() == 1 {
             if self.has_duplicate_naming(&declaration.name) {
                 return Err(error(
-                    declaration.name_span,
+                    declaration.name_span, "declaration-duplicate",
                     format!("A task or variable of the same name has already been defined: {}", declaration.name),
                 ));
             }
@@ -897,7 +928,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_assignment(&mut self, assignment: &Assignment) -> Result<(), MaxError> {
+    fn compile_assignment(&mut self, assignment: &Assignment) -> Result<(), MaxDiagnostic> {
         let operation = update_operation(assignment.op);
 
         match &assignment.target.kind {
@@ -918,12 +949,12 @@ impl<'a> Compiler<'a> {
                 self.emit(bc::Op::UpdateIndex(bc::UpdateIndexOperand { operation, target_name }));
             }
 
-            _ => return Err(error(assignment.target.span, "This expression cannot be assigned to")),
+            _ => return Err(error(assignment.target.span, "unassignable-expression", "This expression cannot be assigned to")),
         }
         Ok(())
     }
 
-    fn compile_if(&mut self, statement: &IfStatement) -> Result<(), MaxError> {
+    fn compile_if(&mut self, statement: &IfStatement) -> Result<(), MaxDiagnostic> {
         // Jumps from the end of each branch to the end of the whole statement
         let mut end_jumps = Vec::new();
         // Jumps taken when the condition is a `possible`, which go to the `maybe` block
@@ -964,7 +995,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_while(&mut self, statement: &WhileStatement) -> Result<(), MaxError> {
+    fn compile_while(&mut self, statement: &WhileStatement) -> Result<(), MaxDiagnostic> {
         // The condition is re-checked at the start of every iteration
         let condition_start = self.ops.len();
         // We'll use this to determine the depth for breaking and skipping
@@ -987,7 +1018,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_for(&mut self, statement: &ForStatement) -> Result<(), MaxError> {
+    fn compile_for(&mut self, statement: &ForStatement) -> Result<(), MaxDiagnostic> {
         // This will be a very linear set of instructions...
         let name = &statement.declaration.name;
 
@@ -1068,14 +1099,14 @@ impl<'a> Compiler<'a> {
     }
 
     /// Pushes `variable <op> limit`
-    fn compile_for_bound_check(&mut self, name: &str, limit: &Expression, op: bc::CompareOp) -> Result<(), MaxError> {
+    fn compile_for_bound_check(&mut self, name: &str, limit: &Expression, op: bc::CompareOp) -> Result<(), MaxDiagnostic> {
         self.emit(bc::Op::Load(name.to_string()));
         self.compile_expression(limit)?;
         self.emit(bc::Op::Compare(op));
         Ok(())
     }
 
-    fn compile_foreach(&mut self, statement: &ForeachStatement) -> Result<(), MaxError> {
+    fn compile_foreach(&mut self, statement: &ForeachStatement) -> Result<(), MaxDiagnostic> {
         // Evaluate the collection once and keep it in a temporary slot
         let collection_slot = self.ctx.alloc_slot();
         self.compile_expression(&statement.iterable)?;
@@ -1128,7 +1159,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_match(&mut self, statement: &MatchStatement) -> Result<(), MaxError> {
+    fn compile_match(&mut self, statement: &MatchStatement) -> Result<(), MaxDiagnostic> {
         /*
             Our match design is very similar to C#:
              - Evaluate the subject once, so `match next() then` doesn't call it once per case (aka, one evaluated value to match against)
@@ -1183,12 +1214,12 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_return(&mut self, value: Option<&Expression>, span: Span) -> Result<(), MaxError> {
+    fn compile_return(&mut self, value: Option<&Expression>, span: Span) -> Result<(), MaxDiagnostic> {
         if self.task_depth.len() == 1 {
-            return Err(error(span, "Return statements can only be used inside a task."));
+            return Err(error(span, "return-outside-task", "Return statements can only be used inside a task."));
         }
         if let Some(bool) = self.task_depth.last() && bool == &false {
-            return Err(error(span, "Return statements can only be used inside a returnable task."));
+            return Err(error(span, "return-in-unreturnable-task","Return statements can only be used inside a returnable task."));
         }
 
         match value {
@@ -1201,7 +1232,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_yield(&mut self, value: Option<&Expression>) -> Result<(), MaxError> {
+    fn compile_yield(&mut self, value: Option<&Expression>) -> Result<(), MaxDiagnostic> {
         match value {
             Some(expression) => self.compile_expression(expression)?,
             None => self.emit_constant(bc::ConstValue::Nil),
@@ -1210,9 +1241,9 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_emit(&mut self, call: &Expression) -> Result<(), MaxError> {
+    fn compile_emit(&mut self, call: &Expression) -> Result<(), MaxDiagnostic> {
         let ExpressionKind::Call { callee, arguments } = &call.kind else {
-            return Err(error(call.span, "'emit' must be followed by an event call, e.g. emit name(payload)"));
+            return Err(error(call.span, "emit-without-event", "'emit' must be followed by an event call, e.g. emit name(payload)"));
         };
 
         // `name` in this file, or `module.name` from a `using` module
@@ -1221,30 +1252,30 @@ impl<'a> Compiler<'a> {
             ExpressionKind::Variable(name) => match self.local_events.get(name) {
                 Some(&arity) => (None, name, arity),
                 // Not a found local event? What a scam!
-                None => return Err(error(callee.span, format!("Unknown event '{name}'"))),
+                None => return Err(error(callee.span, "unknown-event", format!("Unknown event '{name}'"))),
             },
 
             ExpressionKind::MemberAccess { target, member } => {
                 // Yada yada...
                 let ExpressionKind::Variable(module) = &target.kind else {
-                    return Err(error(callee.span, "Expected an event name or module.event after 'emit'"));
+                    return Err(error(callee.span, "emit-without-event", "Expected an event name or module.event after 'emit'"));
                 };
                 if !self.dependencies.contains(module) {
-                    return Err(error(callee.span, format!("Module '{module}' must be imported with 'using' to emit its events")));
+                    return Err(error(callee.span, "missing-module-event", format!("Module '{module}' must be imported with 'using' to emit its events")));
                 }
                 match self.ctx.symbols.get(module).and_then(|t| t.contents.get(member)) {
                     Some(SymbolInfo::Event { parameters }) => (Some(module.clone()), member, parameters.len()),
 
-                    _ => return Err(error(callee.span, format!("Module '{module}' has no event '{member}'"))),
+                    _ => return Err(error(callee.span, "missing-module-event", format!("Module '{module}' has no event '{member}'"))),
                 }
             }
 
-            _ => return Err(error(callee.span, "Expected an event name after 'emit'")),
+            _ => return Err(error(callee.span, "missing-event-name", "Expected an event name after 'emit'")),
         };
 
         // Yippee doodle!
         if arguments.len() > arity {
-            return Err(error(callee.span, format!(
+            return Err(error(callee.span, "missing-event-payload", format!(
                 "Event '{name}' takes at most {arity} payload(s) across all its handlers, but {} were given",
                 arguments.len()
             )));
@@ -1309,32 +1340,33 @@ impl<'a> Compiler<'a> {
         self.patch_jump(skip_body, end);
     }
 
-    fn compile_task_definition(&mut self, task: &TaskDefinition) -> Result<(), MaxError> {
+    fn compile_task_definition(&mut self, task: &TaskDefinition) -> Result<(), MaxDiagnostic> {
         // Just a sneaky peek
         let is_event = task.kind == TaskKind::Event;
 
         if is_event {
             // Only top level
             if self.task_depth.len() != 1 {
-                return Err(error(task.name_span, "Events can only be defined at the top level of a file"));
+                return Err(error(task.name_span, "non-top-level-event", "Events can only be defined at the top level of a file"));
             }
             // No return types are wanted
             if task.return_type.is_some() {
-                return Err(error(task.name_span, "Events cannot return a value, so they cannot declare a return type"));
+                return Err(error(task.name_span, "event-return-type", "Events cannot return a value, so they cannot declare a return type"));
             }
             // Not an event name
             if self.non_event_name(&task.name) {
-                return Err(error(task.name_span, format!("A task, variable or enum of the same name has already been defined: {}", task.name)));
+                return Err(error(task.name_span, "duplicate-task-name", format!("A task, variable or enum of the same name has already been defined: {}", task.name)));
             }
 
             // Check for variadic params in an event, which are NOT allowed!
             if let Some(variadic) = task.parameters.iter().find(|p| p.kind == ParameterKind::Variadic) {
                 return Err(error(
                     task.name_span,
+                    "event-variadic-payload",
                     format!(
                         "Event handlers cannot have variadic parameters ('{}...'). \
                         Payloads are split between handlers by position, so use a list payload instead",
-                        variadic.name
+                        variadic.name.node
                     ),
                 ));
             }
@@ -1342,6 +1374,7 @@ impl<'a> Compiler<'a> {
         else if self.has_duplicate_naming(&task.name) {
             return Err(error(
                 task.name_span,
+                "duplicate-task-name",
                 format!("A task or variable of the same name has already been defined: {}", task.name),
             ));
         }
@@ -1383,14 +1416,14 @@ impl<'a> Compiler<'a> {
                     self.variable_scopes
                         .last_mut()
                         .expect("the compiler always has a scope")
-                        .insert(parameter.name.clone(), VarInfo::default());
+                        .insert(parameter.name.node.clone(), VarInfo::default());
                 }
 
                 if task.is_native {
                     let key = format!("{}.{}", self.module_name, task.name);
                     // Native task -> Must be in module tasks!
                     if !self.ctx.natives.module_tasks.contains(&key) {
-                        return Err(error(task.name_span, format!("No native task '{key}' is registered")));
+                        return Err(error(task.name_span, "missing-native-task", format!("No native task '{key}' is registered")));
                     }
                 }
 
@@ -1453,7 +1486,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_task_call(&mut self, callee: &Expression, arguments: &[Argument]) -> Result<(), MaxError> {
+    fn compile_task_call(&mut self, callee: &Expression, arguments: &[Argument]) -> Result<(), MaxDiagnostic> {
         if let ExpressionKind::MemberAccess { target, member } = &callee.kind {
             if let ExpressionKind::Variable(target_name) = &target.kind {
                 // A variable of the same name hides any module
@@ -1575,7 +1608,7 @@ impl<'a> Compiler<'a> {
     /// Why not temporaries (`TemporaryStore` / `TemporaryLoad`), you might say? Their slots are global, so
     /// a recursive call at the same call site would overwrite them half way through.
     /// `Permute` works on the stack, which is recursion-safe.
-    fn compile_bound_arguments(&mut self, binding: &Binding, args: &[Argument], event: bool) -> Result<u64, MaxError> {
+    fn compile_bound_arguments(&mut self, binding: &Binding, args: &[Argument], event: bool) -> Result<u64, MaxDiagnostic> {
         // Source order, so side effects happen as written
         for arg in args { self.compile_expression(&arg.value)?; }
 
@@ -1626,7 +1659,7 @@ impl<'a> Compiler<'a> {
     `callee` is only used for error messages.
     */
     fn compile_call_arguments(&mut self, callee: &str, signature: Option<Vec<ParamSig>>, args: &[Argument], span: Span)
-        -> Result<u64, MaxError>
+        -> Result<u64, MaxDiagnostic>
     {
         match signature {
             // There are params named? Great!
@@ -1639,7 +1672,7 @@ impl<'a> Compiler<'a> {
             None => {
                 // But... what if the args are an imposter?
                 if let Some(named) = args.iter().find_map(|a| a.name.as_ref()) {
-                    return Err(error(named.span, format!(
+                    return Err(error(named.span, "unknown-parameter-name", format!(
                         "Named arguments can't be used here: the parameters of '{callee}' aren't known at compile time")));
                 }
                 // Crewmates win
@@ -1650,9 +1683,9 @@ impl<'a> Compiler<'a> {
     }
 
     /// Decides whether a plain call is local or goes to an imported module
-    fn resolve_task_operand(&self, callee: &Expression, argument_count: u64) -> Result<bc::TaskCallOperand, MaxError> {
+    fn resolve_task_operand(&self, callee: &Expression, argument_count: u64) -> Result<bc::TaskCallOperand, MaxDiagnostic> {
         let ExpressionKind::Variable(name) = &callee.kind else {
-            return Err(error(callee.span, "Only named tasks can be called."));
+            return Err(error(callee.span, "unnamed-task", "Only named tasks can be called."));
         };
 
         let operand = |target: Option<String>| bc::TaskCallOperand {
@@ -1684,7 +1717,7 @@ impl<'a> Compiler<'a> {
     // -------- EXPRESSIONS ------- //
     // ---------------------------- //
 
-    fn compile_expression(&mut self, expression: &Expression) -> Result<(), MaxError> {
+    fn compile_expression(&mut self, expression: &Expression) -> Result<(), MaxDiagnostic> {
         match &expression.kind {
             ExpressionKind::Integer(value) => self.emit_constant(bc::ConstValue::Integer(*value)),
             ExpressionKind::Float(value) => self.emit_constant(bc::ConstValue::Float(*value)),
@@ -1763,7 +1796,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_member_access(&mut self, target: &Expression, member: &str, span: Span) -> Result<(), MaxError> {
+    fn compile_member_access(&mut self, target: &Expression, member: &str, span: Span) -> Result<(), MaxDiagnostic> {
         let access_type = self.resolve_member_access_type(target, member, span)?;
 
         if let ExpressionKind::Variable(name) = &target.kind
@@ -1800,7 +1833,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_lambda(&mut self, lambda: &Lambda, span: Span) -> Result<(), MaxError> {
+    fn compile_lambda(&mut self, lambda: &Lambda, span: Span) -> Result<(), MaxDiagnostic> {
         // Claim the ID first, so an outer lambda is numbered before the lambdas inside it
         let id = self.ctx.alloc_lambda_id();
 
@@ -1813,17 +1846,17 @@ impl<'a> Compiler<'a> {
             }
         }
         for parameter in &lambda.parameters {
-            child.variable_scopes[0].insert(parameter.clone(), VarInfo::default());
+            let name = parameter.name.node.clone();
+            child.variable_scopes[0].insert(name, VarInfo::default());
         }
 
         match &lambda.body {
             LambdaBody::Expression(expression) => {
-                child.compile_expression(expression)?;
-                child.emit(bc::Op::ReturnValue);
+                child.compile_expression(expression).map(|_| child.emit(bc::Op::ReturnValue))?;
             }
             LambdaBody::Block(body) => {
                 if !contains_return(body) {
-                    return Err(error(span, "A block-bodied lambda must contain a return statement."));
+                    return Err(error(span, "missing-lambda-return", "A block-bodied lambda must contain a return statement."));
                 }
                 child.compile_statements(body)?;
                 child.emit(bc::Op::Return);
@@ -1831,11 +1864,21 @@ impl<'a> Compiler<'a> {
         }
 
         let captured = self.collect_captures(&child.ops, &lambda.parameters);
+        let as_other_params: Vec<max_bytecode::Parameter> = lambda.parameters.iter().map(
+            |param| max_bytecode::Parameter {
+                name: param.name.node.clone(),
+                // ALWAYS Required!
+                parameter_kind: max_bytecode::ParamKind::Required(
+                    // Convert the TypeRef
+                    self.convert_optional_type(&param.type_ref).unwrap_or(None)
+                )
+            }
+        ).collect();
 
         self.emit(bc::Op::Lambda(Arc::new(bc::LambdaOperand {
             id,
             arity: lambda.parameters.len() as u64,
-            parameters: lambda.parameters.clone(),
+            parameters: as_other_params,
             captured,
             chunk: Arc::new(bc::Chunk { instructions: Arc::new(child.ops) }),
         })));
@@ -1843,9 +1886,9 @@ impl<'a> Compiler<'a> {
     }
 
     /// The variables a lambda body uses but does not define itself
-    fn collect_captures(&self, ops: &[bc::Op], parameters: &[String]) -> Vec<String> {
+    fn collect_captures(&self, ops: &[bc::Op], parameters: &[Parameter]) -> Vec<String> {
         // Parameters and anything the lambda stores are its own
-        let mut locals: HashSet<&str> = parameters.iter().map(String::as_str).collect();
+        let mut locals: HashSet<&str> = parameters.iter().map(|par| String::as_str(&par.name.node)).collect();
         for op in ops {
             if let bc::Op::Store(store) = op {
                 locals.insert(store.name.as_str());
@@ -1955,7 +1998,7 @@ fn update_operation(op: AssignOp) -> bc::UpdateOperation {
     assert_eq!(constant, ConstValue::Integer(-10));
     ```
 */ 
-fn to_const(expression: &Expression) -> Result<bc::ConstValue, MaxError> {
+fn to_const(expression: &Expression) -> Result<bc::ConstValue, MaxDiagnostic> {
     Ok(match &expression.kind {
         ExpressionKind::Integer(value) => bc::ConstValue::Integer(*value),
         ExpressionKind::Float(value) => bc::ConstValue::Float(*value),
@@ -1968,7 +2011,7 @@ fn to_const(expression: &Expression) -> Result<bc::ConstValue, MaxError> {
         ExpressionKind::Unary { op: UnaryOp::Negate, operand } => match &operand.kind {
             ExpressionKind::Integer(value) => bc::ConstValue::Integer(-*value),
             ExpressionKind::Float(value) => bc::ConstValue::Float(-*value),
-            _ => return Err(error(expression.span, "A resort value must be a literal")),
+            _ => return Err(error(expression.span, "not-literal-resort", "A resort value must be a literal")),
         },
 
         ExpressionKind::List(items) => {
@@ -1978,10 +2021,10 @@ fn to_const(expression: &Expression) -> Result<bc::ConstValue, MaxError> {
             entries
                 .iter()
                 .map(|(key, value)| Ok((to_const(key)?, to_const(value)?)))
-                .collect::<Result<Vec<_>, MaxError>>()?,
+                .collect::<Result<Vec<_>, MaxDiagnostic>>()?,
         ),
 
-        _ => return Err(error(expression.span, "A resort value must be a literal")),
+        _ => return Err(error(expression.span, "not-literal-resort", "A resort value must be a literal")),
     })
 }
 
@@ -2012,5 +2055,5 @@ Unlike `lookup_signature` in [`compiler`][`Compiler`], this directly intakes a t
 meaning there will be a known vector of `ParamSig`, even if it is empty
 */
 fn signature_of(task: &TaskDefinition) -> Vec<ParamSig> {
-    task.parameters.iter().map(|p| ParamSig { name: p.name.clone(), kind: p.kind.clone() }).collect()
+    task.parameters.iter().map(|p| ParamSig { name: p.name.node.clone(), kind: p.kind.clone() }).collect()
 }
