@@ -1,4 +1,4 @@
-use crate::{error::MaxError, token::{Token, TokenKind as K}};
+use crate::{ast::Span, error::{MaxDiagnostic, Severity}, token::{Token, TokenKind as K}};
 
 pub struct Lexer {
     chars: Vec<char>,
@@ -19,7 +19,7 @@ impl Lexer {
         }
     }
 
-    pub fn tokenize(mut self) -> Result<Vec<Token>, MaxError> {
+    pub fn tokenise(mut self) -> Result<Vec<Token>, MaxDiagnostic> {
         let mut tokens: Vec<Token> = vec![];
 
         while self.pos < self.chars.len() {
@@ -105,15 +105,15 @@ impl Lexer {
         (self.line, self.column)
     }
 
-    fn make_token(kind: K, value: impl Into<String>, start: (u32, u32)) -> Token {
-        Token::new(kind, value, start.0, start.1)
+    fn make_token(kind: K, value: impl Into<String>, start: (u32, u32), end: (u32, u32)) -> Token {
+        Token::new(kind, value, start.0, start.1, end.0, end.1)
     }
 
     // ---------------------------- //
     // -------- READERS ----------- //
     // ---------------------------- //
 
-    fn read_string(&mut self) -> Result<Token, MaxError> {
+    fn read_string(&mut self) -> Result<Token, MaxDiagnostic> {
         let start = self.here();
         self.advance(); // Opening '"'
 
@@ -124,16 +124,17 @@ impl Lexer {
                 Some('"') => break, // Closing '"', they're like twins!
                 Some(c) => value.push(c),
                 None => {
-                    return Err(MaxError::Syntax {
-                        message: String::from("Unterminated string literal."),
-                        line: start.0,
-                        column: start.1,
-                    });
+                    return Err(MaxDiagnostic::new(
+                        Severity::Error,
+                        "unterminated-string-literal",
+                        "Unterminated string literal".to_owned(),
+                        Span::char(start)
+                    ));
                 }
             }
         }
 
-        Ok(Self::make_token(K::StringLiteral, value, start))
+        Ok(Self::make_token(K::StringLiteral, value, start, start))
     }
 
     fn read_number(&mut self) -> Token {
@@ -155,9 +156,11 @@ impl Lexer {
             self.read_digits_into(&mut number);
         }
 
+        let end = self.here();
+
         // Decide... is the cake a lie?
         let kind = if is_float { K::Float } else { K::Integer };
-        Self::make_token(kind, number, start)
+        Self::make_token(kind, number, start, end)
     }
 
     fn read_digits_into(&mut self, out: &mut String) {
@@ -187,10 +190,10 @@ impl Lexer {
         let kind = match word.as_str() {
             "using" => K::Using,
 
-            "declare" => K::Declare,
+            "decl" => K::Decl,
             "resort" => K::Resort,
             "say" => K::Say,
-            "define" => K::Define,
+            "def" => K::Def,
             "enum" => K::Enum,
 
             "function" | "coroutine"  | "event" => K::TaskType,
@@ -233,7 +236,9 @@ impl Lexer {
             _ => K::Identifier,
         };
 
-        Self::make_token(kind, word, start)
+        let end = self.here();
+
+        Self::make_token(kind, word, start, end)
     }
 
     /// Handles + - * % and their compound assignment forms (+= -= *= %=)
@@ -257,12 +262,14 @@ impl Lexer {
             _ => unreachable!("read_arithmetic was called with '{op}'"),
         };
 
-        Self::make_token(kind, text, start)
+        let end = self.here();
+
+        Self::make_token(kind, text, start, end)
     }
 
     /// Handles a '/': a block comment, a line comment, or the divide operators.
     /// Returns None when a comment was skipped.
-    fn read_slash(&mut self) -> Result<Option<Token>, MaxError> {
+    fn read_slash(&mut self) -> Result<Option<Token>, MaxDiagnostic> {
         // 1. Block comment: /// ... \\\
         if self.matches("///") {
             self.skip_block_comment()?;
@@ -281,7 +288,7 @@ impl Lexer {
 
     /// Handles everything that is one or two fixed characters:
     /// = == =>   < <=   > >=   ! !=   brackets   and punctuation
-    fn read_symbol(&mut self, c: char) -> Result<Token, MaxError> {
+    fn read_symbol(&mut self, c: char) -> Result<Token, MaxDiagnostic> {
         let start = self.here();
         self.advance(); // The first character
 
@@ -335,15 +342,18 @@ impl Lexer {
             '?' => (K::QuestionMark, "?"),
 
             _ => {
-                return Err(MaxError::Syntax {
-                    message: format!("Unknown character: '{c}'"),
-                    line: start.0,
-                    column: start.1,
-                });
+                return Err(MaxDiagnostic::new(
+                    Severity::Error,
+                    "unknown-character",
+                    format!("Unknown character: '{c}'"),
+                    Span::char(start)
+                ));
             }
         };
 
-        Ok(Self::make_token(kind, text, start))
+        let end = self.here();
+
+        Ok(Self::make_token(kind, text, start, end))
     }
 
     // ---------------------------- //
@@ -360,7 +370,9 @@ impl Lexer {
         }
     }
 
-    fn skip_block_comment(&mut self) -> Result<(), MaxError> {
+    fn skip_block_comment(&mut self) -> Result<(), MaxDiagnostic> {
+        let start = self.here();
+
         for _ in 0..3 {
             self.advance(); // The opening ///
         }
@@ -372,9 +384,13 @@ impl Lexer {
 
         // You must must, like MUST, close the comment
         if self.pos >= self.chars.len() {
-            return Err(MaxError::EndOfFile(String::from(
-                "Unterminated block comment, please end a block comment with '\\\\\\'",
-            )));
+            let end = self.here();
+            return Err(MaxDiagnostic::new(
+                Severity::Error,
+                "unterminated-block-comment",
+                "Unterminated block comment, end a block comment with '\\\\\\'".to_owned(),
+                Span::new(start.0, start.1, end.0, end.1)
+            ));
         }
 
         // Advance past the \\\
