@@ -19,7 +19,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "isLeapYear",
             Some(BooleanType),
             vec![ParamSpec::required(IntegerType)],
-            self::datetime_is_leap_year
+            self::datetime_is_leap_year,
+            false
         ).doc("If the current year is a leap year, returns true. A leap year is a year that is \
                 divisible by 4, but not divisible by 100 UNLESS it is divisible by 400"
             )
@@ -30,7 +31,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "timeSince",
             Some(FloatType),
             vec![ParamSpec::required(FloatType)],
-            self::datetime_time_since
+            self::datetime_time_since,
+            false
         ).doc("Calculates the time period between a given time in seconds and now. The returned number is in seconds")
     );
 
@@ -39,7 +41,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "formatDate",
             Some(StringType),
             vec![ParamSpec::required(FloatType)],
-            self::datetime_format_date
+            self::datetime_format_date,
+            false
         ).doc("Formats a date from the given seconds amount. This follows the ISO 8901 format as: Year-Month-Day")
     );
 

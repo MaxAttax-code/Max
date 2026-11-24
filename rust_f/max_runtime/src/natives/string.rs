@@ -17,7 +17,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "toUpper",
             Some(StringType),
             vec![ParamSpec::required(StringType)],
-            self::string_to_upper
+            self::string_to_upper,
+            false
         ).doc("Returns this string's characters all in uppercase. This does not handle language specific casing")
     );
 
@@ -27,7 +28,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "toLower",
             Some(StringType),
             vec![ParamSpec::required(StringType)],
-            self::string_to_lower
+            self::string_to_lower,
+            false
         ).doc("Returns this string's characters all in lowercase. This does not handle language specific casing")
     );
 
@@ -37,7 +39,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "trim",
             Some(StringType),
             vec![ParamSpec::required(StringType)],
-            self::string_trim
+            self::string_trim,
+            false
         ).doc("Trims the leading and trailing whitespace")
     );
 
@@ -47,7 +50,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "contains",
             Some(BooleanType),
             vec![ParamSpec::required(StringType), ParamSpec::required(StringType)],
-            self::string_contains
+            self::string_contains,
+            false
         ).doc("Checks if the given substring is contained in this")
     );
 
@@ -57,7 +61,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "split",
             Some(ListType(Some(Box::new(StringType)))),
             vec![ParamSpec::required(StringType), ParamSpec::required(StringType)],
-            self::string_split
+            self::string_split,
+            false
         ).doc("Splits the string at each occurrence of the given delimiter, adding the substring (delimiter non-inclusive) to a list, and returning said list")
     );
 
@@ -67,7 +72,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "toCharacters",
             Some(ListType(Some(Box::new(StringType)))),
             vec![ParamSpec::required(StringType)],
-            self::string_to_characters
+            self::string_to_characters,
+            false
         ).doc("Returns a list of all characters within the string, ignoring byte size. All characters are string types in Max")
     );
 
@@ -77,7 +83,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "replace",
             Some(StringType),
             vec![ParamSpec::required(StringType), ParamSpec::required(StringType), ParamSpec::required(StringType)],
-            self::string_replace
+            self::string_replace,
+            false
         ).doc("Replace all occurrences of a substring within this string with the given replacer")
     );
 
@@ -87,7 +94,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "format",
             Some(StringType),
             vec![ParamSpec::required(StringType), ParamSpec::variadic_none()],
-            self::string_format
+            self::string_format,
+            false
         ).doc("Formats this string in a unique way. All found occurrences of '||' within the string are marked as formattable. \
                 For each formattable slice found, a corresponding argument that will replace the formatter in the string must be given. \
                 This returns the new formatted string, not modifying this string in-place"
@@ -376,6 +384,9 @@ pub fn format_to_string(val: Value) -> String {
 
         Value::EnumDefinition(enums) => format!("{}: {:#?}", enums.identifier, enums.enum_members),
         Value::EnumMember(memb) => format!("{}", memb.full_name()),
+
+        Value::ObjectDefinition(obj_def) => format!("{}", obj_def.identifier),
+        Value::Object(object) => format!("{}", object.borrow().definition.identifier),
 
         Value::Nil => format!("nil"),
     }

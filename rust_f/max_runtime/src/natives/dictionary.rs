@@ -16,7 +16,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "containsKey",
             Some(BooleanType),
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
-            self::dictionary_contains_key
+            self::dictionary_contains_key,
+            false
         ).doc("True if the dictionary contains this key")
     );
 
@@ -26,7 +27,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "add",
             None,
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none(), ParamSpec::required_none()],
-            self::dictionary_add
+            self::dictionary_add,
+            true
         ).doc("Adds the given key and value to the dictionary. This errors if the dictionary does not support duplicate keys")
     );
 
@@ -36,28 +38,9 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "remove",
             None,
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
-            self::dictionary_remove
+            self::dictionary_remove,
+            true
         ).doc("Removes the given key from the dictionary and it's corresponding value, including duplicates if allowed. This does nothing if the key was not found")
-    );
-
-    registry.register_task(
-        NativeTarget::Type("DictionaryType"),
-        NativeTask::new(
-            "copy",
-            Some(DictionaryType(None, None)),
-            vec![ParamSpec::required(DictionaryType(None, None))],
-            self::dictionary_copy
-        ).doc("Copies the dictionary and returns as a value. This includes the dictionaries key-value types if it had any")
-    );
-
-    registry.register_task(
-        NativeTarget::Type("DictionaryType"),
-        NativeTask::new(
-            "softCopy",
-            Some(DictionaryType(None, None)),
-            vec![ParamSpec::required(DictionaryType(None, None))],
-            self::dictionary_soft_copy
-        ).doc("Copies the dictionary and returns as a value. This ignores the dictionaries key-value types, but still allows duplicates if needed")
     );
 
     registry.register_task(
@@ -66,7 +49,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "clear",
             None,
             vec![ParamSpec::required(DictionaryType(None, None))],
-            self::dictionary_clear
+            self::dictionary_clear,
+            true
         ).doc("Clears the dictionary of all key-value pairs")
     );
 
@@ -76,7 +60,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "allowDuplicates",
             None,
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required(BooleanType)],
-            self::dictionary_allow_duplicates
+            self::dictionary_allow_duplicates,
+            true
         ).doc("Allows this dictionary to hold duplicate keys. These keys can have seperate values assigned to each. Since a dictionary")
     );
 
@@ -86,7 +71,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "attemptGet",
             Some(NoType),
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
-            self::dictionary_attempt_get
+            self::dictionary_attempt_get,
+            false
         ).doc("Attempts to get a value from a corresponding key in the dictionary. \
                 This returns nil if not found, and finds the first occurrence of the key when there are duplicates. \
                 First occurrence here means the first key-value pair that was pushed into the list"
@@ -99,7 +85,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "attemptGetAll",
             Some(NoType),
             vec![ParamSpec::required(DictionaryType(None, None)), ParamSpec::required_none()],
-            self::dictionary_attempt_get_all
+            self::dictionary_attempt_get_all,
+            false
         ).doc("Attempt to get all values from a corresponding key in a dictionary. \
                 The value(s) are returned as a list if found, else nil. Use this when duplicates allowed."
             )

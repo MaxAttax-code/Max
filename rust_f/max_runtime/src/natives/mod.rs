@@ -9,6 +9,7 @@ pub mod math;
 pub mod iterables;
 pub mod datetime;
 pub mod random;
+pub mod file;
 
 pub mod number;
 pub mod string;
@@ -76,6 +77,8 @@ pub struct NativeTask {
     pub return_type: Option<MaxType>,
     pub parameter_types: Vec<ParamSpec>,
     pub function: Nativefn,
+    /// If the native task directly modifies the caller
+    pub transmutational: bool,
     /// This is documentation on the task, not any document name
     pub doc: &'static str
 }
@@ -86,6 +89,7 @@ impl NativeTask {
         return_type: Option<MaxType>,
         parameter_types: Vec<ParamSpec>,
         function: self::Nativefn,
+        transmutational: bool
     ) -> Self {
         // Enforce that Variadic can ONLY be the last parameter spec
         // We do this NOW so that we don't have to check everytime the task is called!
@@ -103,6 +107,7 @@ impl NativeTask {
             return_type,
             parameter_types,
             function,
+            transmutational,
             doc: ""
         }
     }
@@ -410,6 +415,16 @@ impl NativeRegistry {
     /// Gets the native module tasks
     pub fn module_task_keys(&self) -> HashSet<String> {
         self.native_functions.keys().filter(|k| self.is_module_key(k)).cloned().collect()
+    }
+
+    /// Gets the names of native tasks marked as transmutational.
+    /// The names are unqualified because the compiler does not currently track receiver types.
+    pub fn transmutational_task_names(&self) -> HashSet<String> {
+        self.native_functions
+            .values()
+            .filter(|task| task.transmutational)
+            .map(|task| task.name.clone())
+            .collect()
     }
 
     /// Gets the native module properties

@@ -18,7 +18,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "countChars",
             Some(DictionaryType(Some(Box::new(StringType)), Some(Box::new(IntegerType)))),
             vec![ParamSpec::required(StringType)],
-            self::iterables_count_chars
+            self::iterables_count_chars,
+            false
         ).doc("Counts how many characters there are in a given string. This only counts the letters of the alphabet, \
                 and the returned dictionary has key-value pairs as letter-count."
             )
@@ -29,7 +30,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "countExistingChars",
             Some(DictionaryType(Some(Box::new(StringType)), Some(Box::new(IntegerType)))),
             vec![ParamSpec::required(StringType)],
-            self::iterables_count_chars_existing
+            self::iterables_count_chars_existing,
+            false
         ).doc("This counts how many characters there are in a given string, only counting the letters of the alphabet. \
                 The returned letter-count dictionary only has keys for letters that existed in the string,"
             )
@@ -40,7 +42,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "toDictionary",
             Some(DictionaryType(None, None)),
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(ListType(None))],
-            self::iterables_to_dictionary
+            self::iterables_to_dictionary,
+            false
         ).doc("Intakes a list that represents keys, and another list that represents values, and merges into a dictionary.")
     );
 
@@ -50,7 +53,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             Some(NoType),
             // NoType, since we allow both List types and Dict types
             vec![ParamSpec::required(NoType)],
-            self::iterables_mode
+            self::iterables_mode,
+            false
         ).doc("Gets the most frequently occurring item in a list or value in a dictionary. If items are as frequent as \
                 eachother, then the first most frequently occurring item found is picked."
             )
@@ -61,7 +65,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "middleValue",
             Some(NoType),
             vec![ParamSpec::required(ListType(None))],
-            self::iterables_median
+            self::iterables_median,
+            false
         ).doc("This finds the middle value in a list. If the list has an even amount of items, then \
                 this returns the value above the middle."
             )
@@ -72,7 +77,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "range",
             Some(FloatType),
             vec![ParamSpec::required(ListType(Some(Box::new(NumberType))))],
-            self::iterables_range
+            self::iterables_range,
+            false
         ).doc("Calculates the range of a list of numbers given.")
     );
 
@@ -81,7 +87,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "inCommon",
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None)), ParamSpec::required(ListType(None)), ParamSpec::optional(BooleanType)],
-            self::iterables_in_common
+            self::iterables_in_common,
+            false
         ).doc("Intakes two lists, and returns a list of the common elements between them. An optional boolean can be given to specify if \
                 duplicate elements are allowed to be added."
             )
@@ -92,7 +99,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "flatten",
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None))],
-            self::iterables_flatten
+            self::iterables_flatten,
+            false
         ).doc("Flattens a list and returns the new list. Flattening means to compress nested lists into one entire list. \
                 This works recursively, so n number of nested lists will still be flattened to one."
             )
@@ -103,7 +111,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "permutations",
             Some(IntegerType),
             vec![ParamSpec::required(ListType(None)), ParamSpec::optional(IntegerType)],
-            self::iterables_permutations
+            self::iterables_permutations,
+            false
         ).doc("Gets the number of permutations in a list using nPr. Permutations attempt to get all possible ways a set \
                 of n can be ordered when r is picked from it 'r' is the number of items to be chosen from the list, \
                 and always defaults to the length of the list - 1. This errors if 'r' is larger than the list length, \
@@ -116,7 +125,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "combinations",
             Some(IntegerType),
             vec![ParamSpec::required(ListType(None)), ParamSpec::optional(IntegerType)],
-            self::iterables_combinations
+            self::iterables_combinations,
+            false
         ).doc("Gets the number of combinations in a list using nCr. Combinations do not care about the order of a permutation \
                 , meaning it often is smaller than the permutations. 'r' is the number of items to be chosen from the list, \
                 and always defaults to the length of the list - 1. This errors if 'r' is larger than the list length, \

@@ -20,7 +20,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "then",
             None,
             vec![ParamSpec::required(BooleanType), ParamSpec::required(TaskType(0))],
-            self::boolean_then
+            self::boolean_then,
+            false
         ).doc("Intakes a lambda that is called when the boolean is true")
     );
     
@@ -30,7 +31,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "else",
             None,
             vec![ParamSpec::required(BooleanType), ParamSpec::required(TaskType(0))],
-            self::boolean_else
+            self::boolean_else,
+            false
         ).doc("Intakes a lambda that is called when the boolean is false")
     );
     
@@ -40,7 +42,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "match",
             None,
             vec![ParamSpec::required(BooleanType), ParamSpec::required(TaskType(0)), ParamSpec::required(TaskType(0))],
-            self::boolean_match
+            self::boolean_match,
+            false
         ).doc("Allows providing a lambda for both the true and false possibilities")
     );
     
@@ -50,7 +53,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "expect",
             None,
             vec![ParamSpec::required(BooleanType), ParamSpec::Optional(Some(StringType))],
-            self::boolean_expect
+            self::boolean_expect,
+            false
         ).doc("Errors and terminates the program and gives back feedback if needed")
     );
 

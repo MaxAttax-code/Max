@@ -37,7 +37,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "randInt",
             Some(IntegerType),
             vec![ParamSpec::required(IntegerType), ParamSpec::required(IntegerType)],
-            self::random_rand_int
+            self::random_rand_int,
+            false
         ).doc("Gets a random integer between the minimum and maximum given")
     );
 
@@ -46,7 +47,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "random",
             Some(FloatType),
             vec![ParamSpec::required(FloatType), ParamSpec::required(FloatType)],
-            self::random_rand_float
+            self::random_rand_float,
+            false
         ).doc("Gets a random float between the minimum and maximum given")
     );
 
@@ -55,7 +57,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "shuffle",
             Some(ListType(None)),
             vec![ParamSpec::required(ListType(None))],
-            self::random_shuffle
+            self::random_shuffle,
+            false
         ).doc("Shuffles a given list and returns it. The complexity of a list of slices n is O(n)")
     );
 
@@ -64,7 +67,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "shuffleNow",
             None,
             vec![ParamSpec::required(ListType(None))],
-            self::random_shuffle_now
+            self::random_shuffle_now,
+            false
         ).doc("Shuffles a given list in place")
     );
 
@@ -73,7 +77,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "weightedChoice",
             Some(NoType),
             vec![ParamSpec::required(ListType(None)), ParamSpec::variadic(IntegerType)],
-            self::random_weighted_choice
+            self::random_weighted_choice,
+            false
         ).doc("Intakes a list of choices, and any following arguments are the weights attached to each individual item in the list. \
                 The weights apply to the list items in order, and must be integers. Note that if less weights than the list length \
                 were given, all remaining items are given a weight of 1 automaiclaly. This errs if more weights than list items were given.")
@@ -84,7 +89,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "seed",
             None,
             vec![ParamSpec::required(IntegerType)],
-            self::random_seed
+            self::random_seed,
+            false
         ).doc("Seeds the entire random module with the integer provided. Seeding this in any part of a project applies this to the rest of the code \
                 that executes after this. Seeds allow the randomness to be defined for all of your modules.")
     );

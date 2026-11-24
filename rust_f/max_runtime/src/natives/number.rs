@@ -17,7 +17,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "abs",
             Some(FloatType),
             vec![ParamSpec::required(FloatType)],
-            self::number_abs
+            self::number_abs,
+            false
         ).doc("Returns the absolute value of this float")
     );
 
@@ -27,7 +28,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "abs",
             Some(IntegerType),
             vec![ParamSpec::required(IntegerType)],
-            self::number_abs
+            self::number_abs,
+            false
         ).doc("Returns the absolute value of this integer")
     );
 
@@ -37,7 +39,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "toString",
             Some(FloatType),
             vec![ParamSpec::required(FloatType)],
-            self::number_to_string
+            self::number_to_string,
+            false
         ).doc("Returns this float as a string")
     );
     
@@ -47,7 +50,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "toString",
             Some(IntegerType),
             vec![ParamSpec::required(IntegerType)],
-            self::number_to_string
+            self::number_to_string,
+            false
         ).doc("Returns this integer as a string")
     );
     
@@ -57,7 +61,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "clamp",
             Some(FloatType),
             vec![ParamSpec::required(FloatType), ParamSpec::required(FloatType), ParamSpec::required(FloatType)],
-            self::number_clamp
+            self::number_clamp,
+            false
         ).doc("Returns this float clamped between a and b")
     );
     
@@ -67,7 +72,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "clamp",
             Some(IntegerType),
             vec![ParamSpec::required(IntegerType), ParamSpec::required(IntegerType), ParamSpec::required(IntegerType)],
-            self::number_clamp
+            self::number_clamp,
+            false
         ).doc("Returns this integer clamped between a and b")
     );
     
@@ -77,7 +83,8 @@ pub fn register_module(registry: &mut NativeRegistry) {
             "round",
             Some(FloatType),
             vec![ParamSpec::required(FloatType), ParamSpec::required(IntegerType)],
-            self::float_round
+            self::float_round,
+            false
         ).doc("Rounds this float to the nearest decimal place given")
     );
 
