@@ -170,7 +170,7 @@ pub fn compile_sources(sources: Vec<SourceFile>, natives: NativeNames) -> Result
         // A file's own symbols are visible while it compiles, same as the C# compiler
         ctx.symbols.insert(
             file.module.clone(),
-            SymbolTable::from_statements(&file.module, &file.statements),
+            SymbolTable::from_statements(&file.module, &file.statements, &file.dependencies, &ctx.symbols),
         );
         // The compiled output errors are inputted into diagnostics
         let output = Compiler::new(&ctx, &file.module, &file.dependencies).compile(&file.statements);
