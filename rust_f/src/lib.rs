@@ -11,6 +11,11 @@ pub enum Op {
     Lambda(Arc<LambdaOperand>),
     MemberAccess(MemberAccessOperand),
 
+    DefineObject(ObjectStructure),
+    Construct(ConstructOperand),
+    /// Simply notifies that construction has finished
+    FinishConstruct,
+
     Permute(Vec<usize>),
 
     Store(StoreOperand),
@@ -69,13 +74,13 @@ pub enum CompareOp { Equal, NotEqual, Lesser, LesserEqual, Greater, GreaterEqual
 pub enum UpdateOperation { Assign, Add, Subtract, Multiply, Divide, Modulus }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemberAccessType { Module, Enum, EnumMember, None }
+pub enum MemberAccessType { Module, Enum, EnumMember, StaticObject, None }
 
 /// A struct rather than an enum, as multiple modifiers may be active at onces
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Modifiers { pub open: bool, pub is_static: bool, pub fixed: bool }
+pub struct Modifiers { pub open: bool, pub monic: bool, pub fixed: bool }
 
-impl Modifiers { pub fn e_new() -> Self { Modifiers { open: false, is_static: false, fixed: false } } }
+impl Modifiers { pub fn e_new() -> Self { Modifiers { open: false, monic: false, fixed: false } } }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConstValue {
@@ -116,6 +121,8 @@ pub enum MaxType {
     DictionaryType(Option<Box<MaxType>>, Option<Box<MaxType>>),
 
     TaskType(usize), // I.e. Lambdas
+    // All models can be types
+    ObjectType(String),
     CoroutineType,
 
     EnumType(String), // An EnumType has a specific identifier unique to it
@@ -217,6 +224,7 @@ impl fmt::Display for MaxType {
 
             MaxType::CoroutineType => write!(f, "CoroutineType"),
             MaxType::TaskType(_) => write!(f, "TaskType"),
+            MaxType::ObjectType(obj) => write!(f, "{}", obj),
 
             MaxType::EnumType(enum_name) => write!(f, "{}", enum_name)
         }
@@ -330,7 +338,7 @@ pub struct Parameter {
 }
 
 /// An operand that feeds us the info to create a task
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TaskInfo {
     pub entry_point: u64,
     pub parameters: Vec<Parameter>,
@@ -392,6 +400,79 @@ pub struct EnumStructure {
 
 
 // ------------------- \\
+// - PARAMETER TYPES - \\
+// ------------------- \\
+
+
+/// Visibility attributes; The 'Protected' attribute would be rejected
+/// before it reaches bytecode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Private
+}
+
+/// Holds the info for a model field. Know that
+/// attributes placed upon a declaration are different
+/// from it's modifiers.
+/// 
+/// A *static* variable can also be *fixed*, and a *private*
+/// variable can also be *open*
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldInfo {
+    pub name: String,
+    pub visibility: Visibility,
+    pub is_static: bool,
+    pub modifiers: Modifiers,
+    pub max_type: Option<MaxType>,
+    pub static_value: Option<ConstValue>,
+}
+
+/// Info to derive a method from it's model. Note that
+/// the model itself is not stored here, but the model
+/// will store this to act as the *parent*.
+/// 
+/// Do **NOT** confuse this with `TaskInfo`. Think of
+/// a method as instructions tied to a specific object/model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodInfo {
+    pub name: String,
+    pub visibility: Visibility,
+    pub is_static: bool,
+    /// The task info is held within the method directly
+    pub task: MemberTask,
+}
+
+/// Represents the kinds a member task of a model can be
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemberTask {
+    Function(TaskInfo),
+    Coroutine(CoroutineInfo)
+}
+
+/// An Object Structure. It holds names, parameters, the **initialiser entry**,
+/// fields and methods
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectStructure {
+    pub module_name: String,
+    pub identifier: String,
+    /// Constructor parameters
+    pub parameters: Vec<Parameter>,
+    /// Where to initialise object instances from
+    pub initialiser_entry: u64,
+    /// These are in order of the declarations
+    pub fields: Vec<FieldInfo>,
+    /// Note that static methods (marked by `is_static` within `MethodInfo`)
+    /// are called by a **static** caller rather than a normal instance caller
+    pub methods: Vec<MethodInfo>,
+}
+
+/// Operand to construct a new object
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstructOperand { pub module: Option<String>, pub object: String, pub argument_count: u64 }
+
+
+// ------------------- \\
 // ----- LAMBDAS ----- \\
 // ------------------- \\
 
@@ -434,12 +515,13 @@ pub struct CoroutineInfo {
 pub struct Bytecode {
     pub instructions: Arc<Vec<Op>>,
     pub tasks: Arc<HashMap<String, TaskInfo>>,
+    pub objects: Arc<HashMap<String, ObjectStructure>>,
     pub coroutines: Arc<HashMap<String, CoroutineInfo>>,
     pub enums: Arc<HashMap<String, EnumStructure>>
 }
 
 impl Bytecode {
     pub fn empty() -> Self {
-        Bytecode { instructions: Arc::default(), tasks: Arc::default(), coroutines: Arc::default(), enums: Arc::default() }
+        Bytecode { instructions: Arc::default(), tasks: Arc::default(), objects: Arc::default(), coroutines: Arc::default(), enums: Arc::default() }
     }
 }
