@@ -18,16 +18,25 @@ use std::rc::Weak;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     String(String),
+
     Integer(i64),
     Float(f64),
+
     List(Rc<RefCell<ListValue>>),
     Dictionary(Rc<RefCell<DictionaryValue>>),
+
     Boolean(bool),
+    Possible(PossibleHandle),
+
     Coroutine(CoroutineHandle), // Special: Coroutines are tasks and variable Values too!
     Lambda(RuntimeLambda), // Given a RuntimeLambda instance to work with
+
     EnumDefinition(EnumStructure), // Allow standalone and typing
     EnumMember(EnumMember), // An enum member alone
-    Possible(PossibleHandle),
+
+    ObjectDefinition(Arc<ObjectStructure>), // Specific to object definitions
+    Object(ObjectHandle), // An actual Object instance, carrying it's name
+    
     Nil
 }
 
@@ -169,6 +178,14 @@ impl Default for CoroutineInstance {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectInstance {
+    pub definition: Arc<ObjectStructure>,
+    pub fields: Arc<HashMap<String, VariableEntry>>
+}
+
+pub type ObjectHandle = Rc<RefCell<ObjectInstance>>;
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -214,6 +231,9 @@ impl fmt::Display for Value {
 
             Value::EnumDefinition(enums) => write!(f, "{}: {:#?}", enums.identifier, enums.enum_members),
             Value::EnumMember(memb) => write!(f, "{}", memb.full_name()),
+
+            Value::ObjectDefinition(obj) => write!(f, "Object {}", obj.identifier),
+            Value::Object(obj_inst) => write!(f, "<{} Instance>", obj_inst.borrow().definition.identifier),
 
             Value::Nil => write!(f, "nil"),
         }
@@ -293,6 +313,11 @@ impl Value {
             keys,
             values,
         })))
+    }
+
+    /// Helper function to quicky create a new Object value form the given instance
+    pub fn new_object(handle: ObjectInstance) -> Self {
+        Value::Object(Rc::new(RefCell::new(handle)))
     }
 
     /// Intakes an `&ConstValue` to read and output a valid `Value`
@@ -380,6 +405,11 @@ impl Value {
 
             (Value::EnumDefinition(enum1), Value::EnumDefinition(enum2)) => Value::Boolean(enum1.identifier == enum2.identifier),
             (Value::EnumMember(mem1), Value::EnumMember(mem2)) => Value::Boolean(mem1.is_same_member(mem2)),
+
+            (Value::ObjectDefinition(def1), Value::ObjectDefinition(def2)) => Value::Boolean(def1.identifier == def2.identifier),
+            (Value::Object(obj1), Value::Object(obj2)) => Value::Boolean(Rc::as_ptr(obj1) == Rc::as_ptr(obj2)),
+            (Value::ObjectDefinition(def), Value::Object(obj)) => Value::Boolean(def.identifier == obj.borrow().definition.identifier),
+            (Value::Object(obj), Value::ObjectDefinition(def)) => Value::Boolean(def.identifier == obj.borrow().definition.identifier),
 
             _ => Value::Boolean(false),
         }
@@ -501,6 +531,9 @@ impl Value {
             Value::EnumDefinition(enums) => Some("EnumType-".to_string() + &enums.identifier),
             Value::EnumMember(memb) => Some(memb.enum_name.clone()),
 
+            Value::ObjectDefinition(obj) => Some("ObjectType-".to_string() + &obj.identifier),
+            Value::Object(obj) => Some(obj.borrow().definition.identifier.clone()),
+
             Value::Nil => None
         }
     }
@@ -529,6 +562,9 @@ impl Value {
 
             Value::EnumDefinition(enums) => MaxType::EnumType(enums.identifier.clone()),
             Value::EnumMember(memb) => MaxType::EnumType(memb.enum_name.clone()),
+
+            Value::ObjectDefinition(obj) => MaxType::ObjectType(obj.identifier.clone()),
+            Value::Object(obj) => MaxType::ObjectType(obj.borrow().definition.identifier.clone()),
 
             Value::Nil => MaxType::NoType
         }
@@ -612,6 +648,11 @@ impl CallFrame {
 pub struct VirtualMachine {
     stack: Vec<Value>,
     scopes: Vec<Arc<HashMap<String, VariableEntry>>>,
+    /// Specific static scopes. Static scopes belong to their designated objects,
+    /// which can be found by the name key of the scope entry
+    static_scopes: HashMap<String, Arc<HashMap<String, VariableEntry>>>,
+    /// A vector of all constructions of an `ObjectStructure`
+    constructions: Vec<Arc<ObjectStructure>>,
     temporaries: HashMap<u64, Value>,
 
     call_stack: Vec<CallFrame>,
@@ -620,7 +661,9 @@ pub struct VirtualMachine {
     pub active_instructions: Arc<Vec<Op>>,
 
     task_definitions: Arc<HashMap<String, TaskInfo>>,
+    objects: Arc<HashMap<String, ObjectStructure>>,
     modules: Arc<HashMap<String, Bytecode>>,
+    /// Name of the current module being run
     module_name: String,
     enums: Arc<HashMap<String, EnumStructure>>,
 
@@ -637,11 +680,14 @@ impl VirtualMachine {
         Self {
             stack: Vec::new(),
             scopes: vec![Arc::default()],
+            static_scopes: HashMap::new(),
+            constructions: Vec::new(),
             temporaries: HashMap::new(),
             call_stack: vec![],
             native_registry: NativeRegistry::new(),
             active_instructions: Arc::default(),
             task_definitions: Arc::default(),
+            objects: Arc::default(),
             modules: Arc::default(),
             module_name: String::new(),
             enums: Arc::default(),
@@ -779,6 +825,12 @@ impl VirtualMachine {
                     Arc::make_mut(&mut self.enums).insert(bound, enum_info.clone());
                 }
 
+                Op::DefineObject(object_info) => {
+                    let bound = object_info.identifier.clone();
+
+                    Arc::make_mut(&mut self.objects).insert(bound, object_info.clone());
+                }
+
                 // field: lambda_cache: HashMap<u64, Arc<LambdaOperand>>
 
                 Op::Lambda(lambda) => {
@@ -820,7 +872,13 @@ impl VirtualMachine {
                                     
                                     // Now, push the resolved EnumDefinition onto the stack!
                                     self.stack.push(enum_def);
-                                } 
+                                }
+                                // Or like... maybe an object!
+                                else if let Some(object_info) = module_bytecode.objects.get(&operand.member_name).cloned() {
+                                    let object_def = Value::ObjectDefinition(Arc::new(object_info));
+
+                                    self.stack.push(object_def);
+                                }
                                 // Twas a coroutine instead?
                                 else if let Some(coroutine_info) = module_bytecode.coroutines.get(&operand.member_name) {
                                     let instance = CoroutineInstance {
@@ -885,10 +943,70 @@ impl VirtualMachine {
                             }
                         }
 
+                        MemberAccessType::StaticObject => {
+                            // Pop the object...
+                            let popped = self.stack.pop();
+                            let object_def = popped.as_ref().unwrap_or(&Value::Nil);
+                            let obj_struct = match object_def {
+                                Value::ObjectDefinition(def) => def,
+                                _ => return Self::runtime_error(
+                                    format!("[IP {:04}] No object to get static member from", ip)
+                                )
+                            };
+
+                            // Get the related static scopes
+                            let scope = self.static_scope(obj_struct);
+                            let entry = scope.get(&operand.member_name);
+                            let entry = match entry {
+                                Some(v) => v,
+                                None => return Self::runtime_error(format!("Could not find static member of '{}' for object '{}'", operand.member_name, obj_struct.identifier))
+                            };
+
+                            // Push the borrowed value!
+                            self.stack.push(entry.value.borrow().clone())
+                        }
+
                         MemberAccessType::None => {
                             return Self::runtime_error(format!("[IP {:04}] Unknown member access type: '{:?}'", ip, operand.access_type));
                         }
                     }
+                }
+
+                Op::Construct(operand) => {
+                    let definition: Arc<ObjectStructure> = match &operand.module {
+                        // A module given
+                        Some(module) => {
+                            let code = self.modules.get(module).unwrap_or_else(|| panic!("Could not find module '{module}'"));
+                            Arc::new(code.objects.get(&operand.object).unwrap_or_else(|| panic!("No object '{}' in '{module}'", operand.object)).clone())
+                        }
+                        // No module given => this module!
+                        None => Arc::new(self.objects.get(&operand.object).cloned()
+                            .unwrap_or_else(|| panic!("Unknown object given to construct: '{}'", operand.object))),
+                    };
+                    // The initialiser is a task whose parameters are the construction parameters
+                    let task = TaskInfo {
+                        entry_point: definition.initialiser_entry,
+                        parameters: definition.parameters.clone(),
+                        return_type: None
+                    };
+                    // Statics go in as an extra scope, so initialisers may read static fields
+                    let statics = self.static_scope(&definition);
+                    self.invoke_task(task, &definition.module_name, operand.argument_count, &mut ip, &mut active_instructions, vec![statics]);
+
+                    // A scope for the fields
+                    self.scopes.push(Arc::new(HashMap::new()));
+                    self.constructions.push(definition);
+                    continue;
+                }
+
+                // Finishes Contruction by creating a new instance using the `constructions` and `scopes` lists
+                Op::FinishConstruct => {
+                    let definition = self.constructions.pop().expect("FinishConstruct without Construct");
+                    let fields = self.scopes.pop().expect("the fields scope");
+                    let instance = Value::new_object(ObjectInstance { definition, fields });
+
+                    self.return_from_task(Some(instance), &mut ip, &mut active_instructions);
+                    continue;
                 }
 
                 // Legit... It just pops from the stack
@@ -1062,24 +1180,36 @@ impl VirtualMachine {
                         continue;
                     }
                     else {
-                        // No variable found? Let's check enums now
+                        // No variable found? Let's check enums and objects now
 
-                        let mut found: Option<(&String, &EnumStructure)> = None;
+                        let mut found_enums: Option<&EnumStructure> = None;
+                        let mut found_objects: Option<&ObjectStructure> = None;
 
-                        for enumerator in self.enums.iter() {
-                            if name == &enumerator.1.identifier {
-                                found = Some(enumerator);
+                        for (identifier, enumerator) in self.enums.iter() {
+                            if name == identifier {
+                                found_enums = Some(enumerator);
                             }
                         }
 
-                        if let Some(enum_found) = found {
-                            let enum_value: Value = Value::EnumDefinition(enum_found.1.clone());
-
-                            self.stack.push(enum_value);
-                        } else {
-                            return Self::runtime_error(format!("[IP {:04}] Variable or Enum '{}' is not defined in any active scope.", ip, name));
+                        for (identifier, object) in self.objects.iter() {
+                            if name == identifier {
+                                found_objects = Some(object);
+                            }
                         }
 
+                        if let Some(enum_found) = found_enums {
+                            let enum_value: Value = Value::EnumDefinition(enum_found.clone());
+
+                            self.stack.push(enum_value);
+                        }
+                        else if let Some(object_found) = found_objects {
+                            let object_value: Value = Value::ObjectDefinition(Arc::new(object_found.clone()));
+
+                            self.stack.push(object_value);
+                        }
+                        else {
+                            return Self::runtime_error(format!("[IP {:04}] Variable or Enum '{}' is not defined in any active scope.", ip, name));
+                        }
                     }
                 }
 
@@ -1529,7 +1659,7 @@ impl VirtualMachine {
                             .cloned();
 
                         if let Some(task) = task {
-                            self.invoke_task(task, target_module_name, call.argument_count, &mut ip, &mut active_instructions);
+                            self.invoke_task(task, target_module_name, call.argument_count, &mut ip, &mut active_instructions, Vec::new());
                             continue;
                         }
 
@@ -1557,7 +1687,8 @@ impl VirtualMachine {
                             &self.module_name.to_string(),
                             call.argument_count,
                             &mut ip,
-                            &mut active_instructions
+                            &mut active_instructions,
+                            Vec::new()
                         );
                         continue;
                     }
@@ -2088,6 +2219,26 @@ impl VirtualMachine {
         };
         self.notify_dependency(DependencyKey::Binding(binding_id));
     }
+    
+    /// Finds a static scope, *or* creates a new one if not already existing, for an [`ObjectStructure`].
+    /// The key of a static scope entry is formatted as `definition.module_name`.`definition.identifier`.
+    /// The static scope map created for a new definition's scope is filled with new `VariableEntry`s of the
+    /// `FieldInfo`s of the objects fields, if they are **static**
+    fn static_scope(&mut self, definition: &ObjectStructure) -> Arc<HashMap<String, VariableEntry>> {
+        let key = format!("{}.{}", definition.module_name, definition.identifier);
+        self.static_scopes.entry(key).or_insert_with(|| {
+            let mut entries = HashMap::new();
+            // In each field, if it is a static field then insert into the entries hashmap
+            for field in definition.fields.iter().filter(|f| f.is_static) {
+                let value = field.static_value.as_ref().map(Value::from_const).unwrap_or(Value::Nil);
+                entries.insert(field.name.clone(),
+                    // No resort!
+                    VariableEntry::new(value, field.modifiers, field.max_type.clone(), None));
+            }
+            // Our new entries!
+            Arc::new(entries)
+        }).clone()
+    }
 
     /// Calls a lambda upon arguments (a vector of values).
     /// This runs the lambda on each argument individually
@@ -2149,6 +2300,7 @@ impl VirtualMachine {
         let nested_bytecode = Bytecode {
             instructions: Arc::clone(&instructions),
             tasks: Arc::clone(&self.task_definitions),
+            objects: Arc::clone(&self.objects),
             coroutines: Arc::default(),
             enums: Arc::clone(&self.enums)
         };
@@ -2622,6 +2774,37 @@ impl VirtualMachine {
         }
     }
 
+    /// Invokes an object method. The object definition is always required, and it's active instructions
+    /// and `ip` are specifically for being passed into `invoke_task` as arguments.
+    /// 
+    /// The instance can be `None`, where it indicates a static method being called upon using the object
+    /// definition.
+    fn invoke_object_method(&mut self, definition: &Arc<ObjectStructure>, instance: Option<ObjectHandle>,
+                            name: &str, mut args: Vec<Value>, ip: &mut usize, active: &mut Arc<Vec<Op>>)
+    {
+        // the receiver (Player, or the instance)
+        args.remove(0);
+        let is_static = instance.is_none();
+        let method = definition.methods.iter().find(|m| m.name == name && m.is_static == is_static)
+            .unwrap_or_else(|| panic!("'{}' has no {} task '{name}'", definition.identifier,
+                // Nicely put that type of task here
+                if is_static { "static" } else { "instance" })
+            );
+        let MemberTask::Function(func) = &method.task else { panic!("Unsupported task member") };
+
+        // [`statics`] for every call, then [`this`][`fields`] for instance calls. The params come last
+        let mut extra = vec![self.static_scope(definition)];
+        if let Some(handle) = &instance {
+            extra.push(Arc::new(HashMap::from([(String::from("this"), VariableEntry::new(
+                Value::Object(Rc::clone(handle)), Modifiers { fixed: true, ..Modifiers::e_new() }, None, None))])));
+            extra.push(Arc::clone(&handle.borrow().fields));
+        }
+        let argument_count = args.len() as u64;
+        // invoke_task will pop the args for us
+        self.stack.extend(args);
+        self.invoke_task(func.clone(), &definition.module_name, argument_count, ip, active, extra);
+    }
+
     /// Attempts to invoke a native task from the native registries
     pub fn invoke_native(&mut self, call: &TaskCallOperand, ip: &mut usize,
                           active_instr: &mut Arc<Vec<Op>>,
@@ -2636,6 +2819,38 @@ impl VirtualMachine {
             }
         }
         args.reverse();
+
+        // Catch Objects here. This MUST come before type inference to
+        // prevent the native registry from getting involved
+        if call.target.is_none() && call.is_member_access {
+            match args.first() {
+                Some(Value::ObjectDefinition(definition)) => {
+                    let definition = Arc::clone(definition);
+                    self.invoke_object_method(&definition, None, &call.name, args, ip, active_instr);
+                    *control_transferred = true;
+                    return Value::Nil;
+                }
+                Some(Value::Object(handle)) => {
+                    let handle = Rc::clone(handle);
+                    // Fields first (e.g. `player.health`). Fields and tasks share one namespace, so this is unambiguous
+                    let field = handle.borrow().fields.get(&call.name).cloned();
+                    if let Some(entry) = field {
+                        if call.argument_count != 1 { panic!("'{}' is a field, not a task", call.name); }
+                        // Yes! Possible bindings RETURN!
+                        self.track_dependency(DependencyKey::Binding(Rc::as_ptr(&entry.value) as usize));
+
+                        return entry.value.borrow().clone();
+                    }
+
+                    let definition = Arc::clone(&handle.borrow().definition);
+                    self.invoke_object_method(&definition, Some(handle), &call.name, args, ip, active_instr);
+
+                    *control_transferred = true;
+                    return Value::Nil;
+                }
+                _ => {}
+            }
+        }
 
         let mut target_type = call.target.clone();
 
@@ -2727,6 +2942,7 @@ impl VirtualMachine {
         argument_count: u64,
         ip: &mut usize,
         active_instructions: &mut Arc<Vec<Op>>,
+        extra_scopes: Vec<Arc<HashMap<String, VariableEntry>>>
     ) {
         // Pop arguments from stack
         let mut arguments: Vec<Value> = Vec::with_capacity(argument_count as usize);
@@ -2811,6 +3027,8 @@ impl VirtualMachine {
             scope_depth: self.scopes.len(),
             module_name: self.module_name.clone(),
         });
+        // Extend any extra scopes now for during the call frame
+        self.scopes.extend(extra_scopes);
 
         self.scopes.push(Arc::new(call_scope));
 
@@ -3107,6 +3325,8 @@ impl VirtualMachine {
 
             (MaxType::EnumType(t), Value::EnumDefinition(e)) => t == &e.identifier,
             (MaxType::EnumType(t), Value::EnumMember(mem)) => t == &mem.enum_name,
+
+            (MaxType::ObjectType(o), Value::ObjectDefinition(def)) => o == &def.identifier,
 
             // These two are special!
             (MaxType::NoType, _) => true,
