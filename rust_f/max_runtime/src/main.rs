@@ -39,6 +39,7 @@ fn main() {
         module_tasks: registry.module_task_keys(),
         module_properties: registry.module_property_keys(),
         global_tasks: registry.global_task_names(),
+        transmutation_tasks: registry.transmutational_task_names()
     };
 
     let analysis = match compile_project(&project_dir.join("src"), &project_dir.join("library"), native_names) {
