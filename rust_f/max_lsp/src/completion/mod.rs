@@ -1,14 +1,40 @@
+//! # How a completion request is answered
+//!
+//! 1. VS Code sends `textDocument/completion` with a document URI and a cursor [`Position`].
+//!    `Backend::completion` (in `main.rs`) looks up the document text and calls [`complete`].
+//! 2. [`context::line_prefix`] cuts the cursor's line off at the cursor. Nothing after the cursor matters for autocompletion.
+//! 3. [`context::context`] lexes **only that prefix** and decides what kind of thing is being typed
+//!    (a member after a dot, a type after `as`, a task kind after `define`, etc...). The result is a
+//!    [`Context`] that is used to determine what should be suggested.
+//! 4. `complete` builds the item list for that context. On the different contexts:
+//!    - `Member`: parse the **whole document** into a [`scope::Scope`], resolve the first name of
+//!      the chain to a type, follow the rest of the chain through the native registry, and list the
+//!      members of the type it ends on.
+//!    - `TypeName`: the built-in types plus the file's enums.
+//!    - `TaskKind` / `General`: fixed lists that are always the same.
+//! 5. We always return the *complete* list for the context. VS Code filters it by whatever the user
+//!    has already typed, so we never have to look at the partly typed word ourselves.
+//!
+//! ## Why the prefix and the whole document are treated differently
+//! The prefix is lexed alone so a half-finished line *elsewhere* can never break the context
+//! decision. The scope needs the whole document, because variables are declared on earlier lines,
+//! and it uses the parser's error recovery so one bad statement only costs that statement.
+
+/// Builds a [`CompletionItem`] from a label, an optional detail and a kind.
+/// An empty `detail` becomes `None`, so no blank grey text appears next to the label.
+
 use std::sync::LazyLock;
 
 use max_runtime::natives::NativeRegistry;
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
-use crate::completion::context::{Context, context, line_prefix, complete_member};
+use crate::completion::{context::{Context, ValueTarget, complete_member, context, line_prefix}, scope::{MemberTy, Scope}};
 
 mod context;
 mod scope;
 
 /// Creates a completion item from the given label, detail and kind ([`CompletionItemKind`]).
-/// If the detail is an empty String after `into()`, it is regarded as None in the `CompletionItem` creation
+/// If the detail is an empty String after `into()`, it is regarded as None in the `CompletionItem` creation,
+/// meaning no details screen even pops up.
 fn create_completion_item(label: impl Into<String>, detail: impl Into<String>, kind: CompletionItemKind) -> CompletionItem {
     let detail = detail.into();
     let detail: Option<String> = if detail.is_empty() {
@@ -30,7 +56,9 @@ fn from_comp_items(items: Vec<(impl Into<String>, impl Into<String>, CompletionI
     completion_items
 }
 
-/// All the defined types in Max with their label and details are stored here
+/// All the defined types in Max with their label and details are stored here.
+/// The items live in a `LazyLock`, so they're built once on first use and then only cloned per
+/// request. They never change at runtime.
 static TYPE_NAME_ITEMS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
     from_comp_items(vec![
         ("int", "An integer in Max, up to 64-bit and signed", CompletionItemKind::TYPE_PARAMETER),
@@ -48,7 +76,23 @@ static TASK_TYPE_NAME_ITEMS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("function", "A function task that can be called and passed arguments into", CompletionItemKind::TYPE_PARAMETER),
         ("coroutine", "A coroutine task that can be called run, pause, cancel, or terminate on, and can yield values", CompletionItemKind::TYPE_PARAMETER),
         ("event", "An event task that can be created in multiple partials, and emitted to call all partials in order", CompletionItemKind::TYPE_PARAMETER),
-        ("native", "A keyword used to define a native Max object", CompletionItemKind::TYPE_PARAMETER),
+        ("native", "A keyword used to define a native Max task", CompletionItemKind::TYPE_PARAMETER),
+    ])
+});
+
+/// All the defined modal types in Max. They are regarded as Type parameters
+static MODEL_TYPE_NAME_ITMES: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
+    from_comp_items(vec![
+        ("object", "An object model that can hold fields and tasks, and constructed as a value. \
+        Objects allow static members, which can be accessed by instances or this object definition directly",
+        CompletionItemKind::TYPE_PARAMETER),
+        ("struct", "A struct model that can hold fields and tasks, and constructed as a value. \
+        Structs can not hold static members, and are better suited for collecting data into one representation",
+        CompletionItemKind::TYPE_PARAMETER),
+        ("interface", "An interface model that holds absract fields and tasks, and extended from by other model types.",
+        CompletionItemKind::TYPE_PARAMETER),
+        ("repr", "A repr model (for representation) that represents a type with the given name.",
+        CompletionItemKind::TYPE_PARAMETER)
     ])
 });
 
@@ -89,6 +133,12 @@ static GENERAL_NAME_ITEMS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
             CompletionItemKind::KEYWORD
         ),
         (
+            "model",
+            "Begins the definition of a model. Model definitions, alike task definitions, are seperated into different kinds \
+            and are used to create representations of other things or collections in general.",
+            CompletionItemKind::KEYWORD
+        ),
+        (
             "enum",
             "Begins an enum definition. Enums are containers that hold members that can be accessed from the container. \
             Enums are global to the entire module once defined (unless it is skipped over in runtime), and are accessible \
@@ -98,7 +148,9 @@ static GENERAL_NAME_ITEMS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ),
         ("open", "A declaration modifier that allows a variable to be shadowed. \
         A variable that shadows another variable can also be declared as open.", CompletionItemKind::KEYWORD),
-        ("static", "A declaration modifier that ensures a variable to have one single represented value across all modules.", CompletionItemKind::KEYWORD),
+        ("monic", "A declaration modifier that ensures a variable to not be be transferred by any kind of assignment or calculation \
+        into another variable. This includes assignment and compound assignment, but also monic values returned from tasks. \
+        Creating new exclusive instances such as native methods like toUpper() is allowed for assigning to a monic value.", CompletionItemKind::KEYWORD),
         ("fixed", "A declaration modifier that fixes a variables value to whatever was first declared. \
         A fixed declaration MUST be initialised with a value.", CompletionItemKind::KEYWORD),
         ("if", "Allows evaluating a condition and running different blocks of code depending on the condition result. \
@@ -161,6 +213,13 @@ static GENERAL_NAME_ITEMS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
     ])
 });
 
+/// Entry point for completion. See the module docs for the whole pipeline.
+///
+/// `pos` is an LSP position: **0-based** line, and `character` counted in **UTF-16 units**.
+/// `registry` provides the members of native types and modules (`"abc".toUpper`, `math.sqrt`).
+///
+/// Only the `Member` and `TypeName` arms build a [`scope::Scope`], because lexing and parsing the
+/// whole document is the expensive step and the other arms don't need it.
 pub fn complete(text: &str, pos: Position, registry: &NativeRegistry) -> Vec<CompletionItem> {
     let context: Context = context(line_prefix(text, pos));
 
@@ -185,7 +244,89 @@ pub fn complete(text: &str, pos: Position, registry: &NativeRegistry) -> Vec<Com
         },
         // function, coroutine, event, native...
         Context::TaskKind => TASK_TYPE_NAME_ITEMS.clone(),
+        // object, struct, interface, repr...
+        Context::ModelKind => MODEL_TYPE_NAME_ITMES.clone(),
         // keywords, types, global tasks, module names, symbols, yada yada...
         Context::General => GENERAL_NAME_ITEMS.clone(),
+        Context::Value(v) => {
+            let scope = scope::build(text, pos.line + 1);
+            let mut items = value_items(&v, &scope);
+
+            // Then everything General offers, minus what we already listed (avoids duplicate suggestions)
+            let extra: Vec<CompletionItem> = GENERAL_NAME_ITEMS.iter()
+                .filter(|g| !items.iter().any(|i| i.label == g.label))
+                .cloned().collect();
+            items.extend(extra);
+            items            
+        }
     }
+}
+
+/// What a value position expects, once the target's type is known
+enum Wanted { Enum(String), Boolean, Other }
+
+/// Gets the `Wanted` item kind from a target and the given scope.
+/// Both `ValueTarget::Declared` and `ValueTarget::Variable` result in the same final process
+/// of matching what the **`MemberTy`** or declared **type name** wants,
+/// but undergo the process differently.
+fn wanted_type(target: &ValueTarget, scope: &Scope) -> Wanted {
+    match target {
+        ValueTarget::Declared(name) => match name.as_str() {
+            "boolean" => Wanted::Boolean,
+
+            n if scope.enums.contains_key(n) => Wanted::Enum(n.to_owned()),
+
+            _ => Wanted::Other,
+        },
+
+        // Notice this arm to simply be ValueTarget::Declared but first using a lookup in the scope symbols
+        ValueTarget::Variable(name) => {
+            // Latest declaration wins, so shadowing works!
+            let Some(sym) = scope.symbols.iter().rev().find(|s| &s.name == name)
+                else { return Wanted::Other };
+            
+            match (&sym.decl_ty, &sym.ty) {
+                (MemberTy::Enum(e), _) => Wanted::Enum(e.clone()),
+
+                (MemberTy::Key("BooleanType"), _) => Wanted::Boolean,
+                
+                // No annotation, but initialised with an enum member: assume it stays in that enum
+                (MemberTy::Unknown, MemberTy::EnumMember(path)) => Wanted::Enum(path[0].clone()),
+                _ => Wanted::Other,
+            }
+        }
+    }
+}
+
+/// Gets the `CompletionItem`s suitable for the `ValueTarget` and scope. This supplies the
+/// items needed, whilst [`wanted_type`] is what actually gets the `Wanted` item kinds.
+/// 
+/// ## Supported
+/// Currently supports the kinds in `Wanted`, with `Wanted::Other` not suggesting anything.
+/// 
+/// Value `CompletionItem`s are then given a `sort_text` of **`Some(0...)`**, where the '0'
+/// tells VS Code to put the item above all others.
+fn value_items(target: &ValueTarget, scope: &Scope) -> Vec<CompletionItem> {
+    let mut items: Vec<CompletionItem> = match wanted_type(target, scope) {
+        Wanted::Boolean => ["true", "false", "possible"].iter()
+            .map(|v| create_completion_item(*v, "boolean value", CompletionItemKind::KEYWORD))
+            .collect(),
+
+        Wanted::Enum(name) => scope.enums.get(&name).map(|members| {
+            members.iter().map(|m| create_completion_item(
+                // inserts the full `Item.Tool`, surely that's nicer?
+                format!("{name}.{}", m.name),
+                format!("member of {name}"),
+                CompletionItemKind::ENUM_MEMBER,
+            )).collect()
+        }).unwrap_or_default(),
+
+        Wanted::Other => vec![],
+    };
+
+    // Fun Fact: VS Code orders by `sort_text`; the leading "0" floats these above the keyword list
+    for item in &mut items {
+        item.sort_text = Some(format!("0{}", item.label));
+    }
+    items
 }
