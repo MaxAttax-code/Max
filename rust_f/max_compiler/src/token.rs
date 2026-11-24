@@ -24,9 +24,11 @@ pub enum TokenKind {
     Resort,
     Say,
     Def,
+    Model,
     Enum,
 
     TaskType,
+    ModelType,
     Modifier,
 
     IfBegin,
@@ -48,6 +50,7 @@ pub enum TokenKind {
 
     Break,
     Skip,
+    This,
 
     Equals,
     Comparator,
@@ -77,6 +80,7 @@ pub enum TokenKind {
     /// '...'
     Ellipsis,
     QuestionMark,
+    Hashtag,
 
     LeftParenthesis,
     RightParenthesis,
