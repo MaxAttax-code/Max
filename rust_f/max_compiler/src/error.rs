@@ -23,6 +23,11 @@ impl MaxDiagnostic {
     pub fn new(severity: Severity, code: &'static str, message: String, span: Span) -> Self {
         MaxDiagnostic { severity, code, message, span }
     }
+
+    /// Creates a self without any real span to identify from
+    pub fn not_real(severity: Severity, code: &'static str, message: String) -> Self {
+        MaxDiagnostic { severity, code, message, span: Span::char((0, 0)) }
+    }
 }
 
 impl fmt::Display for MaxDiagnostic {
