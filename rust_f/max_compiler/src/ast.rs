@@ -141,6 +141,7 @@ pub enum ExpressionKind {
     Dictionary(Vec<(Expression, Expression)>),
 
     Variable(String),
+    This,
 
     Binary { left: Box<Expression>, op: BinaryOp, right: Box<Expression> },
     Comparison { left: Box<Expression>, op: ComparisonOp, right: Box<Expression> },
@@ -149,7 +150,7 @@ pub enum ExpressionKind {
 
     Index { target: Box<Expression>, index: Box<Expression> },
     MemberAccess { target: Box<Expression>, member: String },
-    Call { callee: Box<Expression>, arguments: Vec<Argument> },
+    Callable { callee: Box<Expression>, arguments: Vec<Argument> },
     Lambda(Lambda),
 }
 
@@ -167,12 +168,28 @@ pub enum LambdaBody {
     Block(Vec<Statement>),
 }
 
+/*
+    -------------------
+    ------ TASKS ------
+    -------------------
+*/
+
 /// For task definitions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind { Function, Coroutine, Event }
 
+impl std::fmt::Display for TaskKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskKind::Function => write!(f, "function"),
+            TaskKind::Coroutine => write!(f, "coroutine"),
+            TaskKind::Event => write!(f, "event")
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lifecycle { Open, Static }
+pub enum Lifecycle { Open, Monic }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mutability { Fixed }
@@ -217,6 +234,101 @@ pub struct Argument {
     pub value: Expression,
 }
 
+/*
+    -------------------
+    ------ MODELS -----
+    -------------------
+*/
+
+/// Visibility modifiers on model fields or tasks
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    /// Accessible to all. The default
+    Public,
+    /// Accessible only in itself
+    Private,
+    /// Accessible in itself or inherited classes
+    Protected
+}
+
+/// Provides attributes to a field or task within a model
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Attributes {
+    pub visibility: Option<Visibility>,
+    pub is_static: bool
+}
+
+impl Attributes {
+    /// A Markdown list for `documentation`
+    pub fn markdown(&self) -> String {
+        let visibility = match self.visibility {
+            Some(Visibility::Public) => "public",
+            Some(Visibility::Private) => "private",
+            Some(Visibility::Protected) => "protected",
+            None => "public (default)",
+        };
+        format!("- **Visibility:** {visibility}\n- **Static:** {}", self.is_static)
+    }
+}
+
+pub trait ModelMemberKind {
+    fn to_name(&self) -> String;
+}
+
+/// A field member declared in a model
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldMember {
+    pub attributes: Attributes,
+    pub declaration: Declaration
+}
+
+impl ModelMemberKind for FieldMember {
+    fn to_name(&self) -> String {
+        self.declaration.name.clone()
+    }
+}
+
+/// A task member declared in a model
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskMember {
+    pub attributes: Attributes,
+    pub definition: TaskDefinition
+}
+
+impl ModelMemberKind for TaskMember {
+    fn to_name(&self) -> String {
+        self.definition.name.clone()
+    }
+}
+
+/// A general enum for the kinds of members that a model can hold
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelMember {
+    Field(FieldMember),
+    Task(TaskMember)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectDefinition {
+    pub name: Spanned<String>,
+    /// Span of the entirety of the class, starting from "members"
+    pub span: Span,
+    /// Object parameters are equal to task parameters
+    pub parameters: Vec<Parameter>,
+    pub members: Vec<ModelMember>
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelDefinition {
+    Object(ObjectDefinition)
+}
+
+/*
+    -------------------
+    ----- GENERAL -----
+    -------------------
+*/
+
 /// An enum member as parsed. The compiler adds the enum name and path when it builds the bytecode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumMember {
@@ -243,6 +355,12 @@ pub struct Assignment {
     pub value: Expression,
     pub op: AssignOp,
 }
+
+/*
+    -------------------
+    --- STATEMENTS ----
+    -------------------
+*/
 
 /// Condition branch of an If Statement
 #[derive(Debug, Clone, PartialEq)]
@@ -352,6 +470,7 @@ pub enum StatementKind {
     Skip,
 
     TaskDefinition(TaskDefinition),
+    Model(ModelDefinition),
     Enum(EnumDefinition),
 }
 
