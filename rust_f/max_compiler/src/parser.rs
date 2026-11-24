@@ -151,7 +151,7 @@ impl Parser {
     fn is_contextual_keyword(kind: K) -> bool {
         matches!(
             kind,
-            K::Decl | K::Resort | K::Say | K::Def | K::TaskType | K::Boolean | K::IfBegin
+            K::Decl | K::Resort | K::Say | K::Def | K::TaskType | K::Model | K::ModelType | K::Boolean | K::IfBegin
                 | K::Then | K::Elif | K::Else | K::Maybe | K::ConcludeStatement | K::Return
                 | K::Yield | K::While | K::For | K::Foreach | K::Do | K::Nil | K::As | K::Not
                 | K::And | K::Or | K::To | K::Step | K::Of | K::In | K::With
@@ -384,6 +384,9 @@ impl Parser {
                 self.parse_postfix(dictionary)
             }
 
+            // Manually create 'this'
+            K::This => self.parse_postfix(Expression::new(ExpressionKind::This, span)),
+
             _ => Err(token.span.error("factor-error", format!("Expected an expression, got '{}'", token.value))),
         }
     }
@@ -474,7 +477,7 @@ impl Parser {
         }
         self.expect(K::RightParenthesis, Some("Expected a right parenthesis to close a left parenthesis"))?;
 
-        Ok(Expression::new(ExpressionKind::Call { callee: Box::new(callee), arguments }, span))
+        Ok(Expression::new(ExpressionKind::Callable { callee: Box::new(callee), arguments }, span))
     }
 
     // ---------------------------- //
@@ -726,6 +729,7 @@ impl Parser {
         let kind: StatementKind = match token.kind {
             K::Decl => StatementKind::Declaration(self.parse_declaration()?),
             K::Def => StatementKind::TaskDefinition(self.parse_definition()?),
+            K::Model => StatementKind::Model(self.parse_model()?),
             K::Say => {
                 self.pos += 1;
                 StatementKind::Say(self.parse_expression()?)
@@ -760,7 +764,7 @@ impl Parser {
             K::Emit => {
                 self.pos += 1;
                 let call = self.parse_expression()?;
-                if !matches!(call.kind, ExpressionKind::Call { .. }) {
+                if !matches!(call.kind, ExpressionKind::Callable { .. }) {
                     return Err(token.span.error("missing-event-call", "Expected an event call after 'emit'"))
                 };
                 StatementKind::Emit(call)
@@ -805,7 +809,7 @@ impl Parser {
     /// Checks for if the current token and the next token are of the same kind,
     /// returning a diagnostic if so
     fn double_token_check(&self, kind: K, code: &'static str, message: impl Into<String>) -> Result<(), MaxDiagnostic> {
-        let first = self.current_safe()?;
+        let Some(first) = self.current() else { return Ok(()); };
         let binding = Token::empty();
         let second = self.tokens.get(self.pos + 1).unwrap_or(&binding);
 
@@ -826,7 +830,12 @@ impl Parser {
         let target = self.expect::<&str>(K::Identifier, None)?;
         let span = target.span;
         let name = target.value;
-        let target = self.parse_postfix(Expression::new(ExpressionKind::Variable(name), span))?;
+        // Start with 'this' or a normal variable
+        let start = if target.kind == K::This {
+            ExpressionKind::This } else {
+            ExpressionKind::Variable(name)
+        };
+        let target = self.parse_postfix(Expression::new(start, span))?;
 
         if let Some(op) = self.peek_kind(0).and_then(Self::assign_op) {
             self.pos += 1;
@@ -838,7 +847,7 @@ impl Parser {
         self.double_token_check(K::Plus, "plus-plus-usage", "Use '+=' instead")?;
         self.double_token_check(K::Minus, "minus-minus-usage", "Use '-=' instead")?;
 
-        if matches!(target.kind, ExpressionKind::Call { .. }) {
+        if matches!(target.kind, ExpressionKind::Callable { .. }) {
             return Ok(StatementKind::Expression(target));
         }
 
@@ -860,11 +869,11 @@ impl Parser {
                     modifiers.mutability = Some(Mutability::Fixed);
                 }
 
-                "open" | "static" => {
+                "open" | "monic" => {
                     if modifiers.lifecycle.is_some() {
                         return Err(token.span.error("lifecycle-overload", "Cannot have more than one lifecycle modifier on a variable declaration."));
                     }
-                    modifiers.lifecycle = Some(if token.value == "open" { Lifecycle::Open } else { Lifecycle::Static });
+                    modifiers.lifecycle = Some(if token.value == "open" { Lifecycle::Open } else { Lifecycle::Monic });
                 }
 
                 _ => unreachable!("The Lexer only produces modifier tokens for fixed, open and static"),
@@ -880,7 +889,7 @@ impl Parser {
         let value: Expression;
 
         // No '=' means automatically a `nil`
-        if !(self.current_safe()?.kind == K::Equals) {
+        if !self.check(K::Equals) {
             value = Expression::not_real(ExpressionKind::Nil);
             // Fixed variables MUST be initialised first
             if let Some(Mutability::Fixed) = modifiers.mutability {
@@ -1277,6 +1286,124 @@ impl Parser {
         }
 
         Ok(TaskDefinition { kind, name, is_native, parameters, return_type, body, name_span })
+    }
+
+    fn parse_model(&mut self) -> Result<ModelDefinition, MaxDiagnostic> {
+        self.expect::<&str>(K::Model, None)?;
+        let model_type = self.expect(K::ModelType, Some("Expected a valid model type after 'model'"))?;
+        match model_type.value.as_str() {
+            "object" => {
+                let object = self.parse_object()?;
+
+                Ok(ModelDefinition::Object(object))
+            }
+
+            _ => return Err(model_type.span.error("unsupported-model-type", format!("Model type '{}' is not supported yet", model_type.value)))
+        }
+    }
+
+    /// Parses right after the model type in a model definition
+    fn parse_object(&mut self) -> Result<ObjectDefinition, MaxDiagnostic> {
+        let name_token = self.expect(K::Identifier, Some("Object models require a name"))?;
+        
+        // Same syntax as tasks!
+        let parameters: Vec<Parameter> =
+        if self.eat(K::EvaluateTo) {
+            Vec::new() // No params by default
+        } else if self.check(K::With) {
+            self.eat(K::With);
+            self.parse_parameters()?
+        } else {
+            return Err(self.error_here("object-param-syntax-error", "Expected an object name to be followed by '=>' or parameters ('with')"));
+        };
+
+        let members_span = self.expect(K::Members, Some("Object definition members are started by \"members\""))?.span;
+
+        let (members, end_span): (Vec<ModelMember>, Span) = self.parse_object_members()?;
+
+        let object = ObjectDefinition {
+            name: Spanned { node: name_token.value, span: name_token.span },
+            span: members_span.to(end_span),
+            parameters,
+            members
+        };
+
+        Ok(object)
+    }
+
+    /// Parses what's after "members" in an object. This returns both the final
+    /// Vector of `ModelMember`s and the final `Span` at the *conclude*
+    fn parse_object_members(&mut self) -> Result<(Vec<ModelMember>, Span), MaxDiagnostic> {
+        let mut members: Vec<ModelMember> = Vec::new();
+
+        while !self.check(K::ConcludeStatement) {
+            let attributes: Attributes = self.parse_attributes()?;
+            let now = self.current_safe()?;
+            let model_member: ModelMember = match &now.kind {
+                K::Decl => ModelMember::Field(FieldMember { attributes, declaration: self.parse_declaration()? }),
+                K::Def => ModelMember::Task(TaskMember { attributes, definition: self.parse_definition()? }),
+
+                _ => return Err(now.span.error("invalid-object-member", format!("Cannot create an object member from '{}'", now.value)))
+            };
+
+            members.push(model_member);
+        };
+
+        let end_span = self.expect_conclusion("Expected 'conclude' after an object model definition")?.span;
+
+        Ok((members, end_span))
+    }
+
+    /// Parses the attributes within a model. This does not require the attribute
+    /// syntax to exist, and if it does not, then the default Attributes are returned.
+    /// This method allows stacking attributes like so:
+    /// 
+    /// ```text
+    /// #[static]
+    /// #[private]
+    /// ...
+    /// ```
+    fn parse_attributes(&mut self) -> Result<Attributes, MaxDiagnostic> {
+        // Start as default, so if no '#' is found, then fall through anyway
+        let mut attributes: Attributes = Attributes { visibility: None, is_static: false };
+
+        // NOW we loop!
+        // Looping means consecutive attributes work together on one field
+        while self.eat(K::Hashtag) {
+            self.expect(K::LeftBracket, Some("Expected '[' to start attribute syntax"))?;
+            while let Ok(found) = self.consume() {
+                if found.kind != K::Identifier {
+                    return Err(found.span.error("unknown-attribute", format!("Attribute name was not a valid identifier: '{}'", found.value)));
+                }
+
+                match found.value.as_str() {
+                    "public" => if attributes.visibility.is_none() {
+                        attributes.visibility = Some(Visibility::Public);
+                    } else { return Err(found.span.error("duplicate-visibility", "Visibility attribute is already given")); }
+                    "private" => if attributes.visibility.is_none() {
+                        attributes.visibility = Some(Visibility::Private);
+                    } else { return Err(found.span.error("duplicate-visibility", "Visibility attribute is already given")); }
+                    "protected" => if attributes.visibility.is_none() {
+                        attributes.visibility = Some(Visibility::Protected);
+                    } else { return Err(found.span.error("duplicate-visibility", "Visibility attribute is already given")); }
+                    
+                    "static" => if !attributes.is_static {
+                        attributes.is_static = true;
+                    } else { return Err(found.span.error("duplicate-static", "Static attribute is already given")); }
+
+                    _ => return Err(found.span.error("unknown-attribute", format!("Unknown attribute given: '{}'", found.value)))
+                }
+                
+                // Click and collect!
+                // The 'eat' happens first, so the parser moves up to where the RBrack would be anyway
+                // This allows trailing commas
+                if self.eat(K::Comma) && self.current_safe()?.kind != K::RightBracket {
+                    continue;
+                } else { self.eat(K::RightBracket); break; }
+            }
+        }
+
+        Ok(attributes)
     }
 
     fn parse_enum(&mut self) -> Result<EnumDefinition, MaxDiagnostic> {
