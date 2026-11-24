@@ -194,10 +194,12 @@ impl Lexer {
             "resort" => K::Resort,
             "say" => K::Say,
             "def" => K::Def,
+            "model" => K::Model,
             "enum" => K::Enum,
 
             "function" | "coroutine"  | "event" => K::TaskType,
-            "static" | "open" | "fixed" => K::Modifier,
+            "object" | "struct" | "interface" | "repr" => K::ModelType,
+            "monic" | "open" | "fixed" => K::Modifier,
 
             "true" | "false" | "possible" => K::Boolean,
 
@@ -220,6 +222,7 @@ impl Lexer {
 
             "break" => K::Break,
             "skip" => K::Skip,
+            "this" => K::This,
 
             "nil" => K::Nil,
             "as" => K::As,
@@ -340,6 +343,7 @@ impl Lexer {
             },
             '$' => (K::Dollar, "$"),
             '?' => (K::QuestionMark, "?"),
+            '#' => (K::Hashtag, "?"),
 
             _ => {
                 return Err(MaxDiagnostic::new(
