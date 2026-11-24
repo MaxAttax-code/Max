@@ -202,6 +202,10 @@ impl LanguageServer for Backend {
         Ok((!actions.is_empty()).then_some(actions))
     }
 
+    /// `textDocument/completion`. Reads the document text under a read lock and delegates to
+    /// [`completion::complete`]. The lock is held only for the call, which is synchronous and fast,
+    /// so it can't block `did_change` for long. Returns `None` (not an empty list) when there's
+    /// nothing, so VS Code falls back to its own word-based suggestions.
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
@@ -270,6 +274,7 @@ impl Backend {
             module_tasks: self.registry.module_task_keys(),
             module_properties: self.registry.module_property_keys(),
             global_tasks: self.registry.global_task_names(),
+            transmutation_tasks: self.registry.transmutational_task_names()
         };
         
         let result = tokio::task::spawn_blocking(move || {
