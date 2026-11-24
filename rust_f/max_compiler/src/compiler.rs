@@ -1,10 +1,8 @@
 use std::{
-    cell::Cell,
-    collections::{HashMap, HashSet},
-    sync::Arc,
+    cell::{Cell}, collections::{HashMap, HashSet}, sync::Arc,
 };
 
-use max_bytecode::self as bc;
+use max_bytecode::{self as bc, FieldInfo, MethodInfo};
 
 use crate::{ast::*, error::MaxDiagnostic};
 
@@ -24,6 +22,7 @@ pub struct NativeNames {
     pub module_tasks: HashSet<String>,
     pub module_properties: HashSet<String>,
     pub global_tasks: HashSet<String>,
+    pub transmutation_tasks: HashSet<String>
 }
 
 /**
@@ -35,7 +34,60 @@ Binding arguments here means attaching an argument value with it's parameter nam
 Types are still checked at runtime by the VM, so they are not copied here.
 */
 #[derive(Debug, Clone)]
-pub struct ParamSig { pub name: String, pub kind: ParameterKind }
+pub struct ParamSignature { pub name: String, pub kind: ParameterKind }
+
+
+/// Summarizes whether a task can return monic data and which parameters it may forward.
+/// 
+/// Keep in mind that a task keeps record not only of monic values within that are being
+/// returned, but **also parameters passed in by monic values**, which hold their monomorphism
+/// up to the being returned (`forwarded_parameters` represents these monic parameters)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MonicReturnSummary {
+    /// True if at least one return path can produce a monic value independent of its arguments.
+    /// Despite being called `always_monic`, this refers to whether the task returns a monic
+    /// value outside it's arguments passed in
+    pub always_monic: bool,
+    /// Zero-based parameter positions whose values may be returned directly.
+    pub forwarded_parameters: HashSet<usize>,
+}
+
+/// Provenance of an expression while analyzing a task body.
+/// This is identical to [`MonicReturnSummary`], but serves
+/// to represent the original state an expression was in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MonicOrigin {
+    /// The expression may originate from a monic local or a monic return.
+    always_monic: bool,
+    /// The expression may directly forward one or more task parameters.
+    /// Know that arguments passed in that are **not** monic are treated
+    /// as ordinary parameters, known as the provenance
+    forwarded_parameters: HashSet<usize>,
+}
+
+impl MonicOrigin {
+    /// Returns whether this expression may directly transfer monic-origin data.
+    fn is_monic(&self) -> bool {
+        self.always_monic || !self.forwarded_parameters.is_empty()
+    }
+
+    /// Combines provenance from multiple parts of an expression or return paths.
+    fn merge(&mut self, other: Self) {
+        // What is THAT? Why of course the bits-OR operator!'
+        // [Do not always trust random links, check them first]
+        // Search it up: https://www.geeksforgeeks.org/dsa/complete-reference-for-bitwise-operators-in-programming-coding/#2-bitwise-or-operator-
+        self.always_monic |= other.always_monic;
+        self.forwarded_parameters.extend(other.forwarded_parameters);
+    }
+}
+
+impl MonicReturnSummary {
+    /// Adds another set of possible return origins to this task's summary.
+    fn merge(&mut self, other: Self) {
+        self.always_monic |= other.always_monic;
+        self.forwarded_parameters.extend(other.forwarded_parameters);
+    }
+}
 
 /**
 This struct is essentially the ANSWER to the puzzle "which argument feeds which parameter".
@@ -64,10 +116,11 @@ struct Binding {
 
 #[derive(Debug, Clone)]
 pub enum SymbolInfo {
-    Task(Vec<ParamSig>),
+    Task(Vec<ParamSignature>),
     Coroutine,
-    Event { parameters: Vec<ParamSig> },
+    Event { parameters: Vec<ParamSignature> },
     Enum(Vec<EnumMember>),
+    Object(ObjectSignature),
 }
 
 /**
@@ -86,23 +139,37 @@ ended the loop after the first definition. Silly billy!)
 pub struct SymbolTable {
     pub module_name: String,
     pub contents: HashMap<String, SymbolInfo>,
+    /// The tasks that return monic values, held in `MonicReturnSummary`s
+    pub monic_returns: HashMap<String, MonicReturnSummary>,
 }
 
 impl SymbolTable {
-    pub fn from_statements(module_name: &str, statements: &[Statement]) -> Self {
+    /// Builds a module's exported declarations and analyzes task return provenance.
+    /// The provenance is the original state the task return was in. Once it is found
+    /// that the task returns
+    ///
+    /// `dependencies` and `symbols` let the analysis follow task calls into imported modules.
+    pub fn from_statements(
+        module_name: &str,
+        statements: &[Statement],
+        dependencies: &[String],
+        symbols: &HashMap<String, SymbolTable>,
+    ) -> Self {
         let mut contents = HashMap::new();
+        // Our monic returns come from this very important fn
+        let monic_returns = monic_returning_tasks(statements, dependencies, symbols);
 
         for statement in statements {
             match &statement.kind {
                 StatementKind::TaskDefinition(task) => match task.kind {
-                    TaskKind::Function => { contents.insert(task.name.clone(), SymbolInfo::Task(signature_of(task))); }
+                    TaskKind::Function => { contents.insert(task.name.clone(), SymbolInfo::Task(signature_of_task(task))); }
                     TaskKind::Coroutine => { contents.insert(task.name.clone(), SymbolInfo::Coroutine); }
                     TaskKind::Event => {
                         if let SymbolInfo::Event { parameters } = contents
                             .entry(task.name.clone())
                             .or_insert(SymbolInfo::Event { parameters: Vec::new() })
                         {
-                            parameters.extend(signature_of(task));
+                            parameters.extend(signature_of_task(task));
                         }
                     }
                 },
@@ -111,11 +178,16 @@ impl SymbolTable {
                     contents.insert(definition.identifier.clone(), SymbolInfo::Enum(definition.members.clone()));
                 }
 
+                StatementKind::Model(model) => match model {
+                    ModelDefinition::Object(object) =>
+                        { contents.insert(object.name.node.clone(), SymbolInfo::Object(ObjectSignature::from_definition(object))); }
+                },
+
                 _ => {}
             }
         }
 
-        SymbolTable { module_name: module_name.to_string(), contents }
+        SymbolTable { module_name: module_name.to_string(), contents, monic_returns }
     }
 }
 
@@ -162,12 +234,84 @@ impl CompileContext {
 struct VarInfo {
     /// Declared with `open`, so it may be shadowed
     open: bool,
+    /// Declared with `monic`, so it cannot be involved in assignments
+    monic: bool,
+    /// Declared with `fixed`, so it can not be reassigned or mutated in any way
+    fixed: bool
 }
 
 /// What kind of Enum Node
 enum NodeKind {
     Definition,
     Member,
+}
+
+/// What kind of member of a model
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberKind {
+    Field,
+    Task
+}
+
+/// Holds the signature of a member. It holds
+/// it's attributes and name, but also it's `MemberKind`
+/// to differentiate different member types
+#[derive(Debug, Clone)]
+pub struct MemberSignature {
+    pub name: String,
+    pub kind: MemberKind,
+    pub is_static: bool,
+    pub visibility: Visibility
+}
+
+/// Holds the signature of an Object:
+/// - It's `name`
+/// - It's `parameters`
+/// - Any `members` it has as *`MemberSignature`s*
+/// 
+/// Signatures allow models and their members to supply
+/// information to dependers
+#[derive(Debug, Clone)]
+pub struct ObjectSignature {
+    pub name: String,
+    pub parameters: Vec<ParamSignature>,
+    pub members: Vec<MemberSignature>
+}
+
+impl ObjectSignature {
+    pub fn from_definition(definition: &ObjectDefinition) -> Self {
+        let name = definition.name.node.clone();
+        // Convert to signatures
+        let parameters = definition.parameters.iter().map(
+            |p| ParamSignature {
+                name: p.name.node.clone(),
+                kind: p.kind.clone()
+            }
+        ).collect();
+        let members: Vec<MemberSignature> = definition.members.iter().map(
+            |mem| {
+                match mem {
+                    ModelMember::Field(f_mem) => MemberSignature {
+                        name: f_mem.declaration.name.clone(),
+                        kind: MemberKind::Field,
+                        is_static: f_mem.attributes.is_static,
+                        // Our default public is in play here
+                        visibility: f_mem.attributes.visibility.unwrap_or(Visibility::Public)
+                    },
+                    
+                    ModelMember::Task(t_mem) => MemberSignature {
+                        name: t_mem.definition.name.clone(),
+                        kind: MemberKind::Task,
+                        is_static: t_mem.attributes.is_static,
+                        // Our default public is in play here
+                        visibility: t_mem.attributes.visibility.unwrap_or(Visibility::Public)
+                    }
+                }
+            }
+        ).collect();
+
+        Self { name, parameters, members }
+    }
 }
 
 /// The Jump Kind of a jump.
@@ -203,6 +347,19 @@ struct EnumNode<'s> {
 #[derive(Clone)]
 struct EventHandler { task_name: String, parameter_count: usize }
 
+/// Struct that gives context into all fields and tasks inside the model.
+/// 
+/// To find the members (fields and tasks) within, simply use the `name`
+/// to look for the object in `local_objects` and access from there.
+#[derive(Clone)]
+struct ModelContext {
+    name: String,
+    /// Used to decide when the 'this' expression can be used
+    in_instance_task: bool,
+    /// Used to decide when to prevent 'this' expressions
+    in_static_task: bool,
+}
+
 pub struct CompileOutput {
     pub bytecode: Option<bc::Bytecode>,
     pub diagnostics: Vec<MaxDiagnostic>
@@ -219,11 +376,18 @@ pub struct Compiler<'a> {
     /// All the Diagnostics to be sent to the LSP
     diagnostics: Vec<MaxDiagnostic>,
 
-    tasks: HashMap<String, bc::TaskInfo>,
-    local_tasks: HashMap<String, Vec<ParamSig>>,
+    tasks: Arc<HashMap<String, bc::TaskInfo>>,
+    local_tasks: HashMap<String, Vec<ParamSignature>>,
+    /// A map of all tasks that can possibly return a monic value (our `MonicReturnSummary`)
+    local_monic_returns: HashMap<String, MonicReturnSummary>,
 
-    coroutines: HashMap<String, bc::CoroutineInfo>,
-    enums: HashMap<String, bc::EnumStructure>,
+    objects: Arc<HashMap<String, bc::ObjectStructure>>,
+    local_objects: HashMap<String, ObjectSignature>,
+
+    model_context: Option<ModelContext>,
+
+    coroutines: Arc<HashMap<String, bc::CoroutineInfo>>,
+    enums: Arc<HashMap<String, bc::EnumStructure>>,
 
     /**
         All the jump contexts within the file.
@@ -255,10 +419,14 @@ impl<'a> Compiler<'a> {
             dependencies,
             ops: Vec::new(),
             diagnostics: Vec::new(),
-            tasks: HashMap::new(),
+            tasks: Arc::default(),
             local_tasks: HashMap::new(),
-            coroutines: HashMap::new(),
-            enums: HashMap::new(),
+            local_monic_returns: HashMap::new(),
+            objects: Arc::default(),
+            local_objects: HashMap::new(),
+            model_context: None,
+            coroutines: Arc::default(),
+            enums: Arc::default(),
             local_enums: HashMap::new(),
             events: HashMap::new(),
             local_events: HashMap::new(),
@@ -283,6 +451,10 @@ impl<'a> Compiler<'a> {
             diagnostics: Vec::new(),
             tasks: self.tasks.clone(),
             local_tasks: self.local_tasks.clone(),
+            local_monic_returns: self.local_monic_returns.clone(),
+            objects: self.objects.clone(),
+            local_objects: self.local_objects.clone(),
+            model_context: self.model_context.clone(),
             coroutines: self.coroutines.clone(),
             enums: self.enums.clone(),
             local_enums: self.local_enums.clone(),
@@ -298,41 +470,64 @@ impl<'a> Compiler<'a> {
     /// This is also where all local fields are filled
     pub fn compile(mut self, statements: &[Statement]) -> CompileOutput {
         let mut diagnostics: Vec<MaxDiagnostic> = Vec::new();
+        self.local_monic_returns = monic_returning_tasks(statements, self.dependencies, &self.ctx.symbols);
 
         // Pass 1: learn every top-level enum, so types and member chains can refer to enums defined later
         for statement in statements {
-            if let StatementKind::Enum(definition) = &statement.kind {
-                self.local_enums.insert(definition.identifier.clone(), definition.members.clone());
-            }
-            // Same with events, we want all the arity learned first
-            if let StatementKind::TaskDefinition(task) = &statement.kind
-            {
-                match task.kind {
-                    TaskKind::Event => *self.local_events.entry(task.name.clone()).or_insert(0) += task.parameters.len(),
-                    TaskKind::Function => self.local_tasks.entry(task.name.clone()).or_insert(Vec::new()).extend(signature_of(task)),
+            match &statement.kind {
+                StatementKind::Enum(r#enum) => { self.local_enums.insert(r#enum.identifier.clone(), r#enum.members.clone()); },
 
-                    _ => {}
+                StatementKind::TaskDefinition(task) => {
+                    match task.kind {
+                         // Same with events, we want all the arity learned first
+                        TaskKind::Event => { *self.local_events.entry(task.name.clone()).or_insert(0) += task.parameters.len(); }
+                        TaskKind::Function => { self.local_tasks.entry(task.name.clone()).or_insert(Vec::new()).extend(signature_of_task(task)); }
+
+                        _ => {}
+                    }
                 }
+
+                StatementKind::Model(model) => {
+                    match model {
+                        ModelDefinition::Object(object) =>
+                            { self.local_objects.insert(object.name.node.clone(), ObjectSignature::from_definition(object)); }
+                    }
+                }
+
+                _ => {}
             }
         }
 
-        // Pass 2: emit all enum definitions first, so they exist before any code runs
+        // Pass 2: emit all definitions first, so they exist before any code runs
         for statement in statements {
-            if let StatementKind::Enum(definition) = &statement.kind {
-                match self.compile_enum_definition(definition) {
+            match &statement.kind {
+                // 2a. Enums
+                StatementKind::Enum(r#enum) => match self.compile_enum_definition(r#enum) {
                     Ok(_) => {},
                     Err(d) => diagnostics.push(d),
-                };
+                }
+
+                // 2b. Models
+                StatementKind::Model(model) => match self.compile_model_definition(model) {
+                    Ok(_) => {},
+                    Err(d) => diagnostics.push(d),
+                }
+
+                _ => {}
             }
         }
 
         // Pass 3: everything else, in order
         for statement in statements {
-            if !matches!(statement.kind, StatementKind::Enum(_)) {
-                match self.compile_statement(statement) {
-                    Ok(_) => {},
-                    Err(d) => diagnostics.push(d),
-                };
+            // These skip the ones that we filled from before
+            if matches!(statement.kind, StatementKind::Enum(_)) ||
+                matches!(statement.kind, StatementKind::Model(_)) {
+                continue;
+            }
+            
+            match self.compile_statement(statement) {
+                Ok(_) => {},
+                Err(d) => diagnostics.push(d),
             }
         }
 
@@ -346,11 +541,13 @@ impl<'a> Compiler<'a> {
 
         let bytecode = bc::Bytecode {
             instructions: Arc::new(self.ops),
-            tasks: Arc::new(self.tasks),
-            coroutines: Arc::new(self.coroutines),
-            enums: Arc::new(self.enums),
+            tasks: Arc::clone(&self.tasks),
+            objects: Arc::clone(&self.objects),
+            coroutines: Arc::clone(&self.coroutines),
+            enums: Arc::clone(&self.enums),
         };
 
+        diagnostics.extend(self.diagnostics);
         CompileOutput { bytecode: Some(bytecode), diagnostics }
     }
 
@@ -477,6 +674,72 @@ impl<'a> Compiler<'a> {
         self.variable_scopes.iter().any(|scope| scope.contains_key(name))
     }
 
+    /// Checks if a given expression holds a variable with the given kind. The kind must be
+    /// **one of the fields** in `VarInfo`. This uses `break_member_access` to find a variable
+    /// deeply rooted within an expression. Certain expressions like `foo()[0]` will evaluate
+    /// to false regardless, as no variable is included in the expression.
+    fn is_expression_of(&self, expression: &Expression, search_for: &str) -> bool {
+        let found = Self::break_member_access(expression)
+            .and_then(|name| self.variable_scopes.iter().rev().find_map(|scope| scope.get(name)));
+
+        match search_for {
+            "fixed" => found.is_some_and(|info| info.fixed),
+            "open" => found.is_some_and(|info| info.open),
+            "monic" => found.is_some_and(|info| info.monic),
+
+            _ => false
+        }
+    }
+
+    /// Computes whether an expression directly carries monic *provenance* in the current scope.
+    /// Property reads and transforming calls are treated as new values; direct reads,
+    /// arithmetic, indexing, and summarized task returns retain provenance.
+    /// 
+    /// ### Visualisation
+    /// 
+    /// ```
+    /// let expression = Expression {
+    ///     // Expression: monicValue + " is a monic value"
+    /// }
+    /// // This is will be true, as monicValue + " is a monic value" is treateed as monomorphic.
+    /// // We do this because it is more favourable to do; monicValue += " is a monic value"
+    /// assert!(expression_monic_origin(expression).always_monic);
+    /// 
+    /// let other_expression = Expression {
+    ///     // Expression: monicValue.toUpper()
+    /// }
+    /// // monicValue.toUpper() produces a new value without any relation of transforming the monicValue.
+    /// // To change the monicValue itself, you'd have to reassign itself to the new value!
+    /// assert!(!expression_monic_origin(other_expression).monicValue)
+    /// ```
+    fn expression_monic_origin(&self, expression: &Expression) -> MonicOrigin {
+        // We find variables of monomorphism
+        let variables = self.variable_scopes.iter()
+            .flat_map(|scope| scope.iter())
+            // Produce MonicOrigins from the variable info
+            .map(|(name, info)| (name.clone(), MonicOrigin { always_monic: info.monic, forwarded_parameters: HashSet::new() }))
+            .collect();
+
+        // This detects if the expression holds a monic origin/provenance
+        monic_origin_in_expression(
+            expression,
+            &variables,
+            &self.local_tasks,
+            &self.local_monic_returns,
+            self.dependencies,
+            &self.ctx.symbols,
+        )
+    }
+
+    /// Rejects passing a direct monic-origin value into a user-defined task.
+    fn reject_monic_arguments(&self, arguments: &[Argument]) -> Result<(), MaxDiagnostic> {
+        // Do not allow!!!
+        if let Some(argument) = arguments.iter().find(|argument| self.expression_monic_origin(&argument.value).is_monic()) {
+            return Err(error(argument.value.span, "monic-value-transfer", "A monic value cannot be transferred as a task argument"));
+        }
+        Ok(())
+    }
+
     /// Ensures the name given is not a duplicate name with `has_duplicate_naming`,
     /// and also checks if any local events hold that name
     fn has_duplicate_naming(&self, name: &str) -> bool {
@@ -488,6 +751,7 @@ impl<'a> Compiler<'a> {
         if self.tasks.contains_key(name)
             || self.coroutines.contains_key(name)
             || self.enums.contains_key(name)
+            || self.objects.contains_key(name)
             || self.ctx.natives.global_tasks.contains(name)
         {
             return true;
@@ -508,6 +772,7 @@ impl<'a> Compiler<'a> {
         !self.is_variable_declared(name)
             && (self.enums.contains_key(name)
                 || self.find_enum_members(name).is_some()
+                || self.resolve_object(name).is_some()
                 || self.ctx.symbols.contains_key(name))
     }
 
@@ -540,10 +805,15 @@ impl<'a> Compiler<'a> {
             ),
 
             TypeRef::Named(name) => {
-                if self.find_enum_members(name).is_none() {
+                if self.find_enum_members(name).is_some() {
+                    bc::MaxType::EnumType(name.clone())
+                }
+                else if self.resolve_object(name).is_some() {
+                    bc::MaxType::ObjectType(name.clone())
+                }
+                else {
                     return Err(error(span, "unknown-type", format!("Unknown type '{name}'")));
                 }
-                bc::MaxType::EnumType(name.clone())
             }
         })
     }
@@ -610,12 +880,15 @@ impl<'a> Compiler<'a> {
     /// * `params`: the callee's parameters (variadic, if any, must be last)
     /// * `span`: where to point the "missing argument" error
     /// * `event`: true when binding an `emit`
-    fn bind_arguments(&self, callee: &str, params: &[ParamSig], args: &[Argument], span: Span, event: bool)
+    fn bind_arguments(&self, callee: &str, params: &[ParamSignature], args: &[Argument], span: Span, event: bool, allow_variadics: bool)
         -> Result<Binding, MaxDiagnostic>
     {
         // Step by Step! \\
         // First check if a variadic exists, then the *fixed* params if it does exist!
         let has_variadic = params.last().is_some_and(|p| matches!(p.kind, ParameterKind::Variadic));
+        if has_variadic && !allow_variadics {
+            return Err(error(span, "variadics-disabled", "Cannot use variadic parameters here"));
+        }
         let fixed_params = if has_variadic { &params[..params.len() - 1] } else { params };
         
         // A seperate vec for fixed params that have a specified index in the param list
@@ -773,7 +1046,13 @@ impl<'a> Compiler<'a> {
             });
         }
 
-        // 2. Module access (map.Direction)
+        // 2. Static model accessing
+        if let Some(object) = self.resolve_object_node(target) {
+            self.check_static_member(&object, member, MemberKind::Field, span)?;
+            return Ok(bc::MemberAccessType::StaticObject)
+        }
+
+        // 3. Module access (map.Direction)
         if let ExpressionKind::Variable(name) = &target.kind
             && !self.is_variable_declared(name)
             && self.ctx.symbols.contains_key(name)
@@ -781,14 +1060,14 @@ impl<'a> Compiler<'a> {
             return Ok(bc::MemberAccessType::Module);
         }
 
-        // A memory of our C# Compiler😭: a nested access whose member is itself a module name
+        // A memory of our C# Compiler😭: a nested access whose first member is itself a module name
         if let ExpressionKind::MemberAccess { member: nested, .. } = &target.kind
             && self.ctx.symbols.contains_key(nested)
         {
             return Ok(bc::MemberAccessType::Module);
         }
 
-        // 3. Anything else is an instance property
+        // 4. Anything else is an instance property
         Ok(bc::MemberAccessType::None)
     }
 
@@ -808,7 +1087,8 @@ impl<'a> Compiler<'a> {
         let members = self.build_members(&definition.identifier, &[], &definition.members)?;
         let structure = bc::EnumStructure { identifier: definition.identifier.clone(), enum_members: members };
 
-        self.enums.insert(definition.identifier.clone(), structure.clone());
+        let mut_enums = Arc::make_mut(&mut self.enums);
+        mut_enums.insert(definition.identifier.clone(), structure.clone());
         self.emit(bc::Op::DefineEnum(structure));
         Ok(())
     }
@@ -890,25 +1170,38 @@ impl<'a> Compiler<'a> {
             StatementKind::Emit(event) => self.compile_emit(event)?,
 
             StatementKind::TaskDefinition(task) => self.compile_task_definition(task)?,
-            StatementKind::Enum(definition) => self.compile_enum_definition(definition)?,
+
+            // These are compiled before everything else, they should be ignored
+            StatementKind::Model(_) => return Err(error(statement.span, "not-top-level-model", "Models can only be declared at the top level of a file")),
+            StatementKind::Enum(_) => return Err(error(statement.span, "not-top-level-enum", "Enums can only be declared at the top level of a file")),
         }
         Ok(())
     }
 
     fn compile_declaration(&mut self, declaration: &Declaration) -> Result<(), MaxDiagnostic> {
-        if self.task_depth.len() == 1 {
-            if self.has_duplicate_naming(&declaration.name) {
-                return Err(error(
-                    declaration.name_span, "declaration-duplicate",
-                    format!("A task or variable of the same name has already been defined: {}", declaration.name),
-                ));
-            }
+        if self.task_depth.len() == 1 && self.has_duplicate_naming(&declaration.name) {
+            return Err(error(
+                declaration.name_span, "declaration-duplicate",
+                format!("A task or variable of the same name has already been defined: {}", declaration.name),
+            ));
+        }
 
-            let open = declaration.modifiers.lifecycle == Some(Lifecycle::Open);
-            self.variable_scopes
-                .last_mut()
-                .expect("the compiler always has a scope")
-                .insert(declaration.name.clone(), VarInfo { open });
+        let lifecycle: &Option<Lifecycle> = &declaration.modifiers.lifecycle;
+        let mutability: &Option<Mutability> = &declaration.modifiers.mutability;
+
+        let (open, monic, fixed) = (
+            lifecycle.is_some_and(|lc| lc == Lifecycle::Open),
+            lifecycle.is_some_and(|lc| lc == Lifecycle::Monic),
+            mutability.is_some_and(|mt| mt == Mutability::Fixed)
+        );
+
+        self.variable_scopes
+            .last_mut()
+            .expect("the compiler always has a scope")
+            .insert(declaration.name.clone(), VarInfo { open, fixed, monic });
+
+        if self.expression_monic_origin(&declaration.value).is_monic() {
+            return Err(error(declaration.value.span, "monic-value-transfer", "A monic value cannot be transferred into a declaration"));
         }
 
         self.compile_expression(&declaration.value)?;
@@ -931,21 +1224,42 @@ impl<'a> Compiler<'a> {
     fn compile_assignment(&mut self, assignment: &Assignment) -> Result<(), MaxDiagnostic> {
         let operation = update_operation(assignment.op);
 
+        if self.expression_monic_origin(&assignment.value).is_monic() {
+            return Err(error(assignment.value.span, "monic-value-transfer", "A monic value cannot be transferred into an assignment"));
+        }
+
         match &assignment.target.kind {
             ExpressionKind::Variable(name) => {
+                if self.is_expression_of(&assignment.target, "fixed") {
+                    return Err(error(assignment.target.span, "fixed-variable-mutation", "Cannot reassign a fixed variable"));
+                }
                 self.compile_expression(&assignment.value)?;
                 self.emit(bc::Op::Update(bc::UpdateOperand { name: name.clone(), operation }));
             }
 
+            // Member accessing `this`!
+            ExpressionKind::MemberAccess { target, member }
+            if matches!(target.kind, ExpressionKind::This) => {
+                // Playing checkers, haha
+                self.check_this(target.span)?;
+                self.check_this_member(member, MemberKind::Field, target.span)?;
+                
+                self.compile_expression(&assignment.value)?;
+                self.emit(bc::Op::Update(bc::UpdateOperand {
+                    name: member.clone(),
+                    operation
+                }));
+            }
+
             ExpressionKind::Index { target, index } => {
+                if self.is_expression_of(target, "fixed") {
+                    return Err(error(assignment.target.span, "fixed-variable-mutation", "Cannot modify an item through a fixed variable"));
+                }
                 self.compile_expression(target)?;
                 self.compile_expression(index)?;
                 self.compile_expression(&assignment.value)?;
 
-                let target_name = match &target.kind {
-                    ExpressionKind::Variable(name) => Some(name.clone()),
-                    _ => None,
-                };
+                let target_name = Self::break_member_access(target).map(str::to_string);
                 self.emit(bc::Op::UpdateIndex(bc::UpdateIndexOperand { operation, target_name }));
             }
 
@@ -1242,7 +1556,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_emit(&mut self, call: &Expression) -> Result<(), MaxDiagnostic> {
-        let ExpressionKind::Call { callee, arguments } = &call.kind else {
+        let ExpressionKind::Callable { callee, arguments } = &call.kind else {
             return Err(error(call.span, "emit-without-event", "'emit' must be followed by an event call, e.g. emit name(payload)"));
         };
 
@@ -1283,7 +1597,7 @@ impl<'a> Compiler<'a> {
 
         let signature = self.lookup_signature(name);
 
-        self.compile_call_arguments(name, signature, arguments, callee.span)?;
+        self.compile_call_arguments(name, signature, arguments, callee.span, true)?;
         for _ in arguments.len()..arity {
             self.emit_constant(bc::ConstValue::Nil); // Omitted payloads become nil, quite indeed
         }
@@ -1308,7 +1622,9 @@ impl<'a> Compiler<'a> {
         let skip_body = self.emit_jump(bc::Op::Jump);
         let entry_point = self.ops.len() as u64;
 
-        self.tasks.insert(format!("{event}#emit"), bc::TaskInfo {
+        let mut_tasks = Arc::make_mut(&mut self.tasks);
+
+        mut_tasks.insert(format!("{event}#emit"), bc::TaskInfo {
             entry_point,
             parameters: (0..total)
                 // Params are ALWAYS Optional in an Event!
@@ -1405,8 +1721,10 @@ impl<'a> Compiler<'a> {
             TaskKind::Function | TaskKind::Event => {
                 let parameters = self.convert_parameters(&task.parameters)?;
 
+                let mut_tasks = Arc::make_mut(&mut self.tasks);
+
                 // Registered before the body, so the task can call itself
-                self.tasks.insert(
+                mut_tasks.insert(
                     // For an event, this is instead a unique ID key!
                     task_key.clone(),
                     bc::TaskInfo { entry_point, parameters, return_type },
@@ -1453,7 +1771,8 @@ impl<'a> Compiler<'a> {
 
             TaskKind::Coroutine => {
                 let info = bc::CoroutineInfo { entry_point, return_type };
-                self.coroutines.insert(task.name.clone(), info.clone());
+                let mut_coroutines = Arc::make_mut(&mut self.coroutines);
+                mut_coroutines.insert(task.name.clone(), info.clone());
 
                 self.task_depth.push(true);
                 let result = self.compile_statements(&task.body);
@@ -1486,38 +1805,133 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_task_call(&mut self, callee: &Expression, arguments: &[Argument]) -> Result<(), MaxDiagnostic> {
-        if let ExpressionKind::MemberAccess { target, member } = &callee.kind {
-            if let ExpressionKind::Variable(target_name) = &target.kind {
-                // A variable of the same name hides any module
-                let shadowed = self.is_variable_declared(target_name);
+    /*
+        COMPILING CALLING
+    */
 
-                // Imported module task: other.helper(x)
-                if !shadowed
-                    && let Some(table) = self.ctx.symbols.get(target_name)
-                    && table.contents.contains_key(member)
-                {
-                    // Get our signature and count here
-                    let signature = match table.contents.get(member) {
-                        Some(SymbolInfo::Task(t)) => Some(t.clone()),
-                        _ => None
-                    };
-                    let count = self.compile_call_arguments(member, signature, arguments, callee.span)?;
-                    
-                    self.emit(bc::Op::Call(bc::TaskCallOperand {
-                        target: Some(target_name.clone()),
-                        name: member.clone(),
-                        argument_count: count,
-                        is_member_access: false,
-                    }));
-                    return Ok(());
+    /// Determines whether to compile an object construction, or a task/method
+    /// invocation based on the `callee` given, using `resolve_object_node` to check.
+    /// Arguments are passed into whatever will be compiled.
+    fn determine_caller(&mut self, callee: &Expression, arguments: &[Argument]) -> Result<(), MaxDiagnostic> {
+        if self.resolve_object_node(callee).is_some() {
+            self.compile_object_construction(callee, arguments)
+        } else {
+            self.compile_task_call(callee, arguments)
+        }
+    }
+
+    fn compile_object_construction(&mut self, callee: &Expression, arguments: &[Argument]) -> Result<(), MaxDiagnostic> {
+        let Some(object) = self.resolve_object_node(callee) else {
+            return Err(error(callee.span, "unknown-object", "Expected an object to construct"));
+        };
+
+        // The only things an object can be contained in is a module
+        // `other.Player(..)` names its module. A bare `Player(..)` is local unless a `using` module supplied it
+        let module = match &callee.kind {
+            ExpressionKind::MemberAccess { target, .. } => match &target.kind {
+                ExpressionKind::Variable(module) => Some(module.clone()),
+                _ => None,
+            },
+            ExpressionKind::Variable(name) => self.object_module(name),
+            _ => None,
+        };
+
+        // Yep...
+        self.reject_monic_arguments(arguments)?;
+        // `false` = no variadics, since it's too fiddly with objects
+        let count = self.compile_call_arguments(&object.name, Some(object.parameters.clone()), arguments, callee.span, false)?;
+        self.emit(bc::Op::Construct(bc::ConstructOperand { module, object: object.name.clone(), argument_count: count }));
+        Ok(())
+    }
+
+    /// The module a bare object name comes from: `None` when it is defined **in** this file.
+    /// Call this to get the module name of an object accessed **outside** the current file.
+    fn object_module(&self, name: &str) -> Option<String> {
+        if self.local_objects.contains_key(name) { return None; }
+        self.dependencies.iter().find(|d| matches!(
+            self.ctx.symbols.get(*d).and_then(|t| t.contents.get(name)),
+            Some(SymbolInfo::Object(_))
+        )).cloned()
+    }
+
+    fn compile_task_call(&mut self, callee: &Expression, arguments: &[Argument]) -> Result<(), MaxDiagnostic> {
+        // Inside an object, static tasks are compiled with the object name, not `this`
+        if let ExpressionKind::Variable(name) = &callee.kind
+            && let Some(context) = &self.model_context
+            && !self.is_variable_declared(name)
+        {
+            if let Some(member) = self.object_member(name) {
+                if member.kind == MemberKind::Task && member.is_static {
+                    let target = Expression::new(ExpressionKind::Variable(context.name.clone()), callee.span);
+                    let rewritten = Expression::new(
+                        ExpressionKind::MemberAccess { target: Box::new(target), member: name.clone() }, callee.span);
+                    return self.compile_task_call(&rewritten, arguments);
                 }
+
+                // If not static, then why this-shaped?
+                if member.kind == MemberKind::Task {
+                    return Err(error(callee.span, "instance-task-needs-this",
+                        format!("Call instance tasks through 'this': this.{name}(..)")));
+                }
+            }
+        }
+
+        if let ExpressionKind::MemberAccess { target, member } = &callee.kind {
+            let is_fixed = self.is_expression_of(target, "fixed");
+
+            match &target.kind {
+                ExpressionKind::Variable(target_name) => {
+                    // A variable of the same name hides any module
+                    let shadowed = self.is_variable_declared(target_name);
+
+                    // Imported module task: other.helper(x)
+                    // IF not shadowed and the module exists!
+                    if !shadowed
+                        && let Some(table) = self.ctx.symbols.get(target_name)
+                        && table.contents.contains_key(member)
+                    {
+                        // Get our signature and count here
+                        let signature = match table.contents.get(member) {
+                            Some(SymbolInfo::Task(t)) => Some(t.clone()),
+                            _ => None
+                        };
+                        if signature.is_some() {
+                            self.reject_monic_arguments(arguments)?;
+                        }
+                        let count = self.compile_call_arguments(member, signature, arguments, callee.span, true)?;
+
+                        self.emit(bc::Op::Call(bc::TaskCallOperand {
+                            target: Some(target_name.clone()),
+                            name: member.clone(),
+                            argument_count: count,
+                            is_member_access: false,
+                        }));
+                        return Ok(());
+                    }
+                }
+
+                _ => (),
+            }
+
+            // Otherwise, attempt to find if the target is an object!
+            if let Some(object) = self.resolve_object_node(target) {
+                // Of course, this must be a task member!
+                self.check_static_member(&object, member, MemberKind::Task, callee.span)?;
+            }
+
+            if matches!(target.kind, ExpressionKind::This) {
+                self.check_this(target.span)?;
+                self.check_this_member(member, MemberKind::Task, callee.span)?;
+            }
+
+            if is_fixed && self.ctx.natives.transmutation_tasks.contains(member) {
+                return Err(error(target.span, "fixed-variable-mutation", "Cannot call a transmutational task through a fixed variable"));
             }
 
             // Instance method: the target is pushed first, as `self`
             // Names can never be known like this
             self.compile_expression(target)?;
-            let count = self.compile_call_arguments(member, None, arguments, callee.span)?;
+            let count = self.compile_call_arguments(member, None, arguments, callee.span, true)?;
             self.emit(bc::Op::CallNative(bc::TaskCallOperand {
                 target: None,
                 name: member.clone(),
@@ -1532,15 +1946,68 @@ impl<'a> Compiler<'a> {
             ExpressionKind::Variable(v) => self.lookup_signature(v),
             _ => None
         };
+        if signature.is_some() {
+            // Reject them with a seperate list of steps
+            self.reject_monic_arguments(arguments)?;
+        }
         // A custom label must be made since the callee is not a member access. We expect it to be a variable name otherwise
         let label = if let ExpressionKind::Variable(n) = &callee.kind {
             n.as_str()
         } else { "self-task" };
-        let count = self.compile_call_arguments(label, signature, arguments, callee.span)?;
+        let count = self.compile_call_arguments(label, signature, arguments, callee.span, true)?;
 
         let operand = self.resolve_task_operand(callee, count)?;
         self.emit(bc::Op::Call(operand));
         Ok(())
+    }
+
+    /// Checks if a given name is a member of the current `model_context`.
+    /// This searches for *any* kind of member, and returns `Some(MemberSignature)`
+    /// belonging to the member if found, else `None`
+    fn object_member(&self, name: &str) -> Option<&MemberSignature> {
+        let context = self.model_context.as_ref()?;
+        self.local_objects.get(&context.name)?.members.iter().find(|m| m.name == name)
+    }
+
+    /// Breaks down a member access, finding if the first target (second last member) is
+    /// a valid variable binding; An `Expression::Variable`, then gets the name from the found variable.
+    ///
+    /// This works **recursively**, so a variable will eventually be found. If no variable was ever found,
+    /// or the method found an expression that could not be broken down further, then `None` is returned.
+    fn break_member_access(expression: &Expression) -> Option<&str> {
+        match &expression.kind {
+            ExpressionKind::MemberAccess { target, .. } => {
+                Self::break_member_access(target)
+            }
+
+            ExpressionKind::Index { target, .. } => {
+                Self::break_member_access(target)
+            }
+
+            ExpressionKind::Variable(var) => Some(var),
+
+            _ => None
+        }
+    }
+
+    /// A super of `break_member_access` that returns the finally found Variable Expression
+    /// instead of returning only it's name. This again also returnings `None` if no variable
+    /// was found
+    fn get_from_member_access(expression: &Expression) -> Option<Expression> {
+        match &expression.kind {
+            ExpressionKind::MemberAccess { target, .. } => {
+                Self::get_from_member_access(target)
+            }
+
+            ExpressionKind::Index { target, .. } => {
+                Self::get_from_member_access(target)
+            }
+
+            // End at a variable
+            ExpressionKind::Variable(_) => Some(expression.clone()),
+
+            _ => None
+        }
     }
 
     /**
@@ -1559,7 +2026,7 @@ impl<'a> Compiler<'a> {
     Returns a clone, not a reference: the caller needs `&mut self` right afterwards to
     emit bytecode, and a borrowed signature would block that.
     */
-    fn lookup_signature(&self, name: &str) -> Option<Vec<ParamSig>> {
+    fn lookup_signature(&self, name: &str) -> Option<Vec<ParamSignature>> {
         if self.is_variable_declared(name) { return None; } // a lambda in a variable
         if let Some(sig) = self.local_tasks.get(name) { return Some(sig.clone()); }
         
@@ -1571,43 +2038,45 @@ impl<'a> Compiler<'a> {
         None
     }
 
-    /// Emits the bytecode for a call's arguments using a [`Binding`], and returns how many
-    /// values the call will receive (the `argument_count` for `Op::Call`).
-    ///
-    /// The VM's `Call` expects its arguments on the stack **in parameter order**, but the
-    /// user may have written them in any order, and side effects must still happen **in
-    /// the order written**. So this does it in three steps:
-    ///
-    /// **1. Push every argument in SOURCE order.** `foo(b = f(), g())` runs `f` first,
-    /// then `g`, exactly as written.
-    ///
-    /// **2. Push a `nil` for every parameter nobody supplied that still needs a slot.**
-    /// These go after the real arguments. A gap BEFORE a supplied parameter must become an
-    /// explicit nil. Trailing unfilled optionals are simply dropped (the VM already fills
-    /// those). Events set `event = true` and always fill every slot, because the event
-    /// dispatcher takes the full list.
-    ///
-    /// **3. Emit `Op::Permute(order)` to reorder what is on the stack.**
-    /// `order[k]` means "the value pushed at position `order[k]` becomes the k-th argument".
-    /// The variadic arguments are appended at the end, in source order. If `order` is
-    /// already 0, 1, 2, ... nothing needs reordering! So no instruction is emitted and a
-    /// normal call costs nothing extra.
-    ///
-    /// ```text
-    /// foo(b = 2, 1)  with params (a, b),  binding.fixed = [Some(1), Some(0)]
-    ///   step 1: push 2, push 1          stack: [2, 1]      (source order)
-    ///   step 2: no gaps
-    ///   step 3: order = [1, 0]          Permute -> stack: [1, 2]   a = 1, b = 2
-    ///
-    /// foo(c = 3, 1)  with params (a, b?, c)   (b is optional)
-    ///   step 1: push 3, push 1          stack: [3, 1]
-    ///   step 2: b has no argument but sits before c, so push nil -> stack: [3, 1, nil]
-    ///   step 3: order = [1, 2, 0]       Permute -> stack: [1, nil, 3]
-    /// ```
-    ///
-    /// Why not temporaries (`TemporaryStore` / `TemporaryLoad`), you might say? Their slots are global, so
-    /// a recursive call at the same call site would overwrite them half way through.
-    /// `Permute` works on the stack, which is recursion-safe.
+    /**
+    Emits the bytecode for a call's arguments using a [`Binding`], and returns how many
+    values the call will receive (the `argument_count` for `Op::Call`).
+
+    The VM's `Call` expects its arguments on the stack **in parameter order**, but the
+    user may have written them in any order, and side effects must still happen **in
+    the order written**. So this does it in three steps:
+
+    **1. Push every argument in SOURCE order.** `foo(b = f(), g())` runs `f` first,
+    then `g`, exactly as written.
+
+    **2. Push a `nil` for every parameter nobody supplied that still needs a slot.**
+    These go after the real arguments. A gap BEFORE a supplied parameter must become an
+    explicit nil. Trailing unfilled optionals are simply dropped (the VM already fills
+    those). Events set `event = true` and always fill every slot, because the event
+    dispatcher takes the full list.
+
+    **3. Emit `Op::Permute(order)` to reorder what is on the stack.**
+    `order[k]` means "the value pushed at position `order[k]` becomes the k-th argument".
+    The variadic arguments are appended at the end, in source order. If `order` is
+    already 0, 1, 2, ... nothing needs reordering! So no instruction is emitted and a
+    normal call costs nothing extra.
+
+    ```text
+    foo(b = 2, 1)  with params (a, b),  binding.fixed = [Some(1), Some(0)]
+      step 1: push 2, push 1          stack: [2, 1]      (source order)
+      step 2: no gaps
+      step 3: order = [1, 0]          Permute -> stack: [1, 2]   a = 1, b = 2
+
+    foo(c = 3, 1)  with params (a, b?, c)   (b is optional)
+      step 1: push 3, push 1          stack: [3, 1]
+      step 2: b has no argument but sits before c, so push nil -> stack: [3, 1, nil]
+      step 3: order = [1, 2, 0]       Permute -> stack: [1, nil, 3]
+    ```
+
+    Why not temporaries (`TemporaryStore` / `TemporaryLoad`), you might say? Their slots are global, so
+    a recursive call at the same call site would overwrite them half way through.
+    `Permute` works on the stack, which is recursion-safe.
+    */
     fn compile_bound_arguments(&mut self, binding: &Binding, args: &[Argument], event: bool) -> Result<u64, MaxDiagnostic> {
         // Source order, so side effects happen as written
         for arg in args { self.compile_expression(&arg.value)?; }
@@ -1658,13 +2127,13 @@ impl<'a> Compiler<'a> {
 
     `callee` is only used for error messages.
     */
-    fn compile_call_arguments(&mut self, callee: &str, signature: Option<Vec<ParamSig>>, args: &[Argument], span: Span)
+    fn compile_call_arguments(&mut self, callee: &str, signature: Option<Vec<ParamSignature>>, args: &[Argument], span: Span, allow_variadics: bool)
         -> Result<u64, MaxDiagnostic>
     {
         match signature {
             // There are params named? Great!
             Some(params) => {
-                let binding = self.bind_arguments(callee, &params, args, span, false)?;
+                let binding = self.bind_arguments(callee, &params, args, span, false, allow_variadics)?;
                 self.compile_bound_arguments(&binding, args, false)
             }
 
@@ -1711,6 +2180,292 @@ impl<'a> Compiler<'a> {
 
         // Defined later in this file, or a native global such as `input`. The VM resolves it at run time
         Ok(operand(None))
+    }
+
+    // ---------------------------- //
+    // ---- MODEL DEFINITIONS ----- //
+    // ---------------------------- //
+
+    /// Resolve if an object (local or in dependencies) has the given name,
+    /// returning it's `ObjectSignature` if so
+    fn resolve_object(&self, name: &str) -> Option<ObjectSignature> {
+        if let Some(object) = self.local_objects.get(name) {
+            return Some(object.clone());
+        }        
+
+        for dependency in self.dependencies {
+            if let Some(table) = self.ctx.symbols.get(dependency)
+                && let Some(SymbolInfo::Object(object)) = table.contents.get(name)
+            {
+                return Some(object.clone());
+            }
+        }
+
+        None
+    }
+
+    /// This resolves an object signature from the given `Expression`. This is
+    /// not to be confused with `resolve_object`, which this function calls upon
+    /// in certain arms.
+    /// 
+    /// The Expression is matched with:
+    /// - `ExpressionKind::Variable` if no variable of same name => `resolve_object`
+    /// - `ExpressionKind::MemberAccess` => check if the TARGET kind is a variable,
+    /// then return the `ObjectSignature` obtained from the it's `SymbolInfo`
+    fn resolve_object_node(&self, expression: &Expression) -> Option<ObjectSignature> {
+        match &expression.kind {
+            ExpressionKind::Variable(name) if !self.is_variable_declared(name) => self.resolve_object(name),
+
+            ExpressionKind::MemberAccess { target, member } => {
+                // Break it down, Yeah! In reality, objects could never be indexed like:
+                // object[1].getObject()
+                // So we rely on if the target only is an object
+                if let ExpressionKind::Variable(module) = &target.kind
+                    && !self.is_variable_declared(module)
+                    && let Some(table) = self.ctx.symbols.get(module)
+                    && let Some(SymbolInfo::Object(object)) = table.contents.get(member)
+                {
+                    return Some(object.clone());
+                }
+                // Otherwise nothin...
+                None
+            }
+
+            _ => None,
+        }
+    }
+
+    /// Checks if a member is a static member of the `ObjectSignature` given. The `kind` is
+    /// used to force the member to one `MemberKind` (returning a diagnostic otherwise).
+    fn check_static_member(&self, object: &ObjectSignature, member: &str, kind: MemberKind, span: Span) -> Result<(), MaxDiagnostic>
+    {
+        let Some(found) = object.members.iter().find(|m| m.name == member) else {
+            return Err(error(span, "unknown-object-member",
+                format!("'{member}' is not a member of '{}'", object.name)));
+        };
+        if found.kind != kind {
+            return Err(error(span, "wrong-member-kind",
+                format!("'{member}' is a {} member, not a {}",
+                    if found.kind == MemberKind::Field { "field" } else { "task" },
+                    if kind == MemberKind::Field { "field" } else { "task" })));
+        }
+        if !found.is_static {
+            return Err(error(span, "instance-member-via-object",
+                format!("'{member}' is an instance member; use it on an instance of '{}'", object.name)));
+        }
+        let inside_object = self.model_context.as_ref().is_some_and(|c| c.name == object.name);
+        if found.visibility == Visibility::Private && !inside_object {
+            return Err(error(span, "private-member", format!("'{member}' is private to '{}'", object.name)));
+        }
+        Ok(())
+    }
+
+    /// This function only first matches the `ModelDefinition` kind to call the appropriate compiler method
+    fn compile_model_definition(&mut self, model: &ModelDefinition) -> Result<(), MaxDiagnostic> {
+        match model {
+            ModelDefinition::Object(object) => self.compile_object_definition(object)
+        }
+    }
+        
+    fn compile_object_definition(&mut self, object: &ObjectDefinition) -> Result<(), MaxDiagnostic> {
+        let scope_count = self.variable_scopes.len();
+        let result = self.compile_object_inner(object);
+        // A failed object must not leak its scopes or context into later statements
+        self.variable_scopes.truncate(scope_count);
+        self.model_context = None;
+        result
+    }
+
+    /// Works on compiling the inner-fields and methods of an object. This calls
+    /// upon other methods specific to models too, such as `compile_function_body`
+    fn compile_object_inner(&mut self, object: &ObjectDefinition) -> Result<(), MaxDiagnostic> {
+        if self.has_duplicate_naming(&object.name.node) {
+            return Err(error(object.name.span, "duplicate-object",
+                format!("Object name has already been taken elsewhere: '{}'", object.name.node)));
+        }
+
+        // No variadic params
+        if let Some(variadic) = object.parameters.iter().find(|p| p.kind == ParameterKind::Variadic) {
+            return Err(error(variadic.name.span, "variadic-object-parameter",
+                "Object construction parameters cannot be variadic"));
+        }
+
+        // One namespace for fields and tasks. We compare names, not whole members
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut fields: Vec<&FieldMember> = Vec::new();
+        let mut tasks: Vec<&TaskMember> = Vec::new();
+        for member in &object.members {
+            match member {
+                ModelMember::Field(f) => {
+                    // Yuk Yuk
+                    if !seen.insert(f.declaration.name.as_str()) {
+                        return Err(f.declaration.name_span.error("duplicate-object-member",
+                            format!("Another object member of the same name is taken: '{}'", f.declaration.name)));
+                    }
+                    fields.push(f);
+                }
+                ModelMember::Task(t) => {
+                    if !seen.insert(t.definition.name.as_str()) {
+                        return Err(t.definition.name_span.error("duplicate-object-member",
+                            format!("Another object member of the same name is taken: '{}'", t.definition.name)));
+                    }
+                    // Functions only, *for now*. This also rejects events and coroutines
+                    if t.definition.kind != TaskKind::Function || t.definition.is_native {
+                        return Err(t.definition.name_span.error("unsupported-task-member",
+                            format!("Task member '{}' is not supported yet", t.definition.name)));
+                    }
+                    tasks.push(t);
+                }
+            }
+        }
+
+        // Instance fields mean ALL fields, including statics
+        let instance_fields: HashSet<String> = fields.iter().map(|f| f.declaration.name.clone()).collect();
+        // Filter out the statics
+        let static_fields: HashSet<String> = fields.iter()
+            .filter(|f| f.attributes.is_static).map(|f| f.declaration.name.clone()).collect();
+
+        self.model_context = Some(ModelContext {
+            name: object.name.node.clone(),
+            in_static_task: false,
+            in_instance_task: false
+        });
+
+        // This will be a single jump over, like, everything
+        let skip = self.emit_jump(bc::Op::Jump);
+
+        // ---- Initialiser ---- \\
+        let initialiser_entry = self.ops.len() as u64;
+        // Scope for the construction params
+        self.enter_compiler_scope();
+        for parameter in &object.parameters {
+            self.variable_scopes.last_mut().expect("the compiler always has a scope")
+                .insert(parameter.name.node.clone(), VarInfo::default());
+        }
+        self.enter_compiler_scope();
+
+        // Compile all fields now
+        let mut field_infos: Vec<FieldInfo> = Vec::new();
+        for field in &fields {
+            field_infos.push(self.from_field_member(field)?);
+            // Static fields live in the definition (static_value), not in each instance
+            if !field.attributes.is_static {
+                self.compile_declaration(&field.declaration)?;
+            }
+        }
+        self.emit(bc::Op::FinishConstruct);
+        self.exit_compiler_scope();
+        self.exit_compiler_scope();
+
+        // ---- Methods ---- \\
+        let mut method_infos: Vec<MethodInfo> = Vec::new();
+        for task in &tasks {
+            let is_static = task.attributes.is_static;
+            // is_static is true, and by default so is in_instance!
+            if let Some(context) = self.model_context.as_mut() { context.in_static_task = is_static; context.in_instance_task = true }
+
+            // Instance methods see every field, static methods only the static ones
+            self.enter_compiler_scope();
+            let visible = if is_static { &static_fields } else { &instance_fields };
+            for name in visible {
+                self.variable_scopes.last_mut().expect("the compiler always has a scope")
+                    .insert(name.clone(), VarInfo::default());
+            }
+
+            // nothing emitted before this: no skip jump, no EnterScope.
+            // Therefore it is correct to start here
+            let entry_point = self.ops.len() as u64;
+            method_infos.push(self.from_task_member(task, entry_point)?);
+            self.compile_function_body(&task.definition)?;
+            self.exit_compiler_scope();
+        }
+
+        self.patch_jump(skip, self.ops.len());
+
+        let parameters = self.convert_parameters(&object.parameters)?;
+
+        let new_object = bc::ObjectStructure {
+            module_name: self.module_name.to_string(),
+            identifier: object.name.node.clone(),
+            initialiser_entry,
+            parameters,
+            fields: field_infos,
+            methods: method_infos,
+        };
+
+        // Insert into the compiler objects, of course!
+        Arc::make_mut(&mut self.objects).insert(
+            object.name.node.clone(),
+            new_object.clone(),
+        );
+        self.emit(bc::Op::DefineObject(new_object));
+        Ok(())
+    }
+
+    /// Emits the Parameters + body + Return. The object owns the skip jump and the entry point,
+    /// and nothing is registered in `self.tasks` (As this is for an object, not the global tasks).
+    fn compile_function_body(&mut self, task: &TaskDefinition) -> Result<(), MaxDiagnostic> {
+        self.enter_compiler_scope();
+        for parameter in &task.parameters {
+            self.variable_scopes.last_mut().expect("the compiler always has a scope")
+                .insert(parameter.name.node.clone(), VarInfo::default());
+        }
+
+        // 'true' for now as events are not inside objects currently
+        self.task_depth.push(true);
+        let result = self.compile_statements(&task.body);
+        self.task_depth.pop();
+        result?;
+
+        self.emit(bc::Op::Return);
+        self.exit_compiler_scope();
+        Ok(())
+    }
+
+    /// Converts a `FieldMember` into a `FieldInfo`. All values are sourced from the `FieldMember`
+    /// itself, with help of the Compiler's methods.
+    /// 
+    /// The `max_bytecode::Visibility::Protected` is **not** supported yet
+    fn from_field_member(&self, member: &FieldMember) -> Result<FieldInfo, MaxDiagnostic> {
+        let visibility = convert_visibility_to_bytecode(&member.attributes.visibility);
+
+        let modifiers: max_bytecode::Modifiers = convert_modifiers(&member.declaration.modifiers);
+        let max_type = self.convert_optional_type(&member.declaration.type_ref)?;
+
+        Ok(FieldInfo {
+            name: member.to_name(),
+            visibility,
+            is_static: member.attributes.is_static,
+            modifiers,
+            max_type,
+            static_value: if member.attributes.is_static {
+                Some(to_const(&member.declaration.value)?) } else { None }
+        })
+    }
+
+    /// Converts a `TaskMember` into a `MethodInfo`. The entry point *u64* value must provided as well
+    /// for the task member.
+    /// 
+    /// Only the `max_bytecode::MemberTask::Function` is supported currently
+    fn from_task_member(&self, task: &TaskMember, entry_point: u64) -> Result<MethodInfo, MaxDiagnostic> {
+        let visibility = convert_visibility_to_bytecode(&task.attributes.visibility);
+
+        let member_task: max_bytecode::MemberTask = match &task.definition.kind {
+            TaskKind::Function => max_bytecode::MemberTask::Function(max_bytecode::TaskInfo {
+                entry_point,
+                parameters: self.convert_parameters(&task.definition.parameters)?,
+                return_type: self.convert_optional_type(&task.definition.return_type)?
+            }),
+
+            _ => return Err(task.definition.name_span.error("unsupported-task-member", format!("Task member '{}' is not supported yet", task.definition.kind)))
+        };
+
+        Ok(MethodInfo {
+            name: task.to_name(),
+            visibility,
+            is_static: task.attributes.is_static,
+            task: member_task
+        })
     }
 
     // ---------------------------- //
@@ -1789,7 +2544,8 @@ impl<'a> Compiler<'a> {
                 self.compile_member_access(target, member, expression.span)?
             }
 
-            ExpressionKind::Call { callee, arguments } => self.compile_task_call(callee, arguments)?,
+            ExpressionKind::Callable { callee, arguments } => self.determine_caller(callee, arguments)?,
+            ExpressionKind::This => self.check_this(expression.span)?,
 
             ExpressionKind::Lambda(lambda) => self.compile_lambda(lambda, expression.span)?,
         }
@@ -1798,6 +2554,14 @@ impl<'a> Compiler<'a> {
 
     fn compile_member_access(&mut self, target: &Expression, member: &str, span: Span) -> Result<(), MaxDiagnostic> {
         let access_type = self.resolve_member_access_type(target, member, span)?;
+
+        if matches!(target.kind, ExpressionKind::This) {
+            self.check_this(span)?;
+            // `this` members specifically
+            self.check_this_member(member,MemberKind::Field, span)?;
+            self.emit(bc::Op::Load(member.to_string()));
+            return Ok(());
+        }
 
         if let ExpressionKind::Variable(name) = &target.kind
             && !self.is_variable_declared(name)
@@ -1925,17 +2689,76 @@ impl<'a> Compiler<'a> {
         }
         captured
     }
+
+    /// Checks for if a 'this' expression is valid. This is connected to the
+    /// Compiler's `model_context`. No model context or if the context is not
+    /// inside an instance task (`!in_instance_task`) means 'this' is invalid.
+    fn check_this(&self, span: Span) -> Result<(), MaxDiagnostic> {
+        match &self.model_context {
+            None => Err(error(span, "this-outside-object", "'this' can only be used inside an object's instance tasks")),
+            
+            Some(c) if !c.in_instance_task => Err(error(span, "this-in-static-context",
+                "'this' cannot be used inside static tasks or object initialisers")),
+            
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// Function that runs a series of checks that return an error diagnostic if
+    /// any fail. This function errors in the following situations:
+    /// 
+    /// - `this` outside objects
+    /// - `this` accessing unknown member
+    /// - Using `this` to access a static member
+    /// - The member accessed does match the `MemberKind` passed in
+    /// 
+    /// `this.member` is fully checkable: the object is the one being compiled
+    fn check_this_member(&self, member: &str, kind: MemberKind, span: Span) -> Result<(), MaxDiagnostic> {
+        // Cannot use 'this' outside an object
+        let Some(object) = self.model_context.as_ref().and_then(|c| self.local_objects.get(&c.name)) else {
+            return Err(error(span, "this-outside-object", "'this' can only be used inside an object"));
+        };
+        // Simply does not exist
+        let Some(found) = object.members.iter().find(|m| m.name == member) else {
+            return Err(error(span, "unknown-object-member", format!("'{member}' is not a member of '{}'", object.name)));
+        };
+        // Static but tried to be accessed with 'this'
+        if found.is_static {
+            return Err(error(span, "static-member-via-this",
+                format!("'{member}' is static; access it as '{}.{member}'", object.name)));
+        }
+        // Not matching the wanted member kind
+        if found.kind != kind {
+            return Err(error(span, "wrong-member-kind", format!("'{member}' is not a {}",
+                if kind == MemberKind::Field { "field" } else { "task" })));
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------- //
 // ----- FREE HELPER FUNCS ---- //
 // ---------------------------- //
 
-fn convert_modifiers(modifiers: &ModifierSet) -> bc::Modifiers {
+pub fn convert_modifiers(modifiers: &ModifierSet) -> bc::Modifiers {
     bc::Modifiers {
         open: modifiers.lifecycle == Some(Lifecycle::Open),
-        is_static: modifiers.lifecycle == Some(Lifecycle::Static),
+        monic: modifiers.lifecycle == Some(Lifecycle::Monic),
         fixed: modifiers.mutability == Some(Mutability::Fixed),
+    }
+}
+
+/// Converts the given `ast::Visibility` into `max_bytecode::Visibility`
+fn convert_visibility_to_bytecode(visibility: &Option<Visibility>) -> max_bytecode::Visibility {
+    match visibility {
+        Some(visible) => match visible {
+            Visibility::Public => max_bytecode::Visibility::Public,
+            Visibility::Private => max_bytecode::Visibility::Private,
+            Visibility::Protected => unreachable!("This should not be reached")
+        }
+
+        // Our default!
+        None => max_bytecode::Visibility::Public
     }
 }
 
@@ -2054,6 +2877,315 @@ calls to tasks they import).
 Unlike `lookup_signature` in [`compiler`][`Compiler`], this directly intakes a task definition,
 meaning there will be a known vector of `ParamSig`, even if it is empty
 */
-fn signature_of(task: &TaskDefinition) -> Vec<ParamSig> {
-    task.parameters.iter().map(|p| ParamSig { name: p.name.node.clone(), kind: p.kind.clone() }).collect()
+fn signature_of_task(task: &TaskDefinition) -> Vec<ParamSignature> {
+    task.parameters.iter().map(|p| ParamSignature { name: p.name.node.clone(), kind: p.kind.clone() }).collect()
+}
+
+/// Infers return provenance for each function, iterating until forwarding calls stabilize.
+///
+/// The result is conservative across branches: if any return path can yield monic data,
+/// that possibility is recorded in the task summary.
+fn monic_returning_tasks(
+    statements: &[Statement],
+    dependencies: &[String],
+    symbols: &HashMap<String, SymbolTable>,
+) -> HashMap<String, MonicReturnSummary> {
+    // Collect all them tasks baby!
+    let (mut tasks, mut monics): (Vec<&TaskDefinition>, Vec<&Declaration>) = (Vec::new(), Vec::new());
+    for statement in statements {
+        match &statement.kind {
+            // Events do not return anything!
+            StatementKind::TaskDefinition(task) if task.kind == TaskKind::Function || task.kind == TaskKind::Coroutine => tasks.push(task),
+            // Push only monics
+            StatementKind::Declaration(declaration) if declaration.modifiers.lifecycle == Some(Lifecycle::Monic) => monics.push(declaration),
+            _ => {},
+        };
+    }
+
+    // Collect signatures
+    let local_signatures: HashMap<String, Vec<ParamSignature>> = tasks.iter()
+        .map(|task| (task.name.clone(), signature_of_task(task)))
+        .collect();
+    let mut summaries = HashMap::new();
+
+    loop {
+        let previous = summaries.clone();
+        for task in &tasks {
+            let mut origins = HashMap::new();
+            for (index, parameter) in task.parameters.iter().enumerate() {
+                // Create a monic origin with only the param name and it's usize position
+                origins.insert(parameter.name.node.clone(), MonicOrigin {
+                    always_monic: false,
+                    forwarded_parameters: HashSet::from([index]),
+                });
+            }
+
+            for monic in monics.iter() {
+                origins.insert(monic.name.clone(), MonicOrigin {
+                    always_monic: true,
+                    forwarded_parameters: Default::default()
+                });
+            }
+
+            // Attempt to identify a return statement with monic value
+            let returned = monic_return_origin_in_statements(
+                &task.body, &mut origins, &local_signatures, &summaries, dependencies, symbols,
+            );
+
+            let summary = MonicReturnSummary {
+                always_monic: returned.always_monic,
+                forwarded_parameters: returned.forwarded_parameters,
+            };
+            summaries.entry(task.name.clone()).or_insert_with(MonicReturnSummary::default).merge(summary);
+        }
+        if summaries == previous {
+            break;
+        }
+    }
+
+    summaries
+}
+
+/// Finds a known user-task signature and its monic return summary, local or imported.
+/// `local_signatures` and `local_summaries` are used to find the signature and
+/// `MonicReturnSummary` from a name. The Compiler's `get_from_member_access` can be
+/// seen in this function as well as others in order to break member access to the
+/// core variable to access it's monomorphism, if possible.
+/// 
+/// Due to this function requiring these params, consequential functions that use this
+/// **must also hold the locals or get access to them**.
+fn monic_call_summary(
+    callee: &Expression,
+    local_signatures: &HashMap<String, Vec<ParamSignature>>,
+    local_summaries: &HashMap<String, MonicReturnSummary>,
+    dependencies: &[String],
+    symbols: &HashMap<String, SymbolTable>,
+) -> Option<(Vec<ParamSignature>, MonicReturnSummary)> {
+    match &callee.kind {
+        // Why how kind to be so simple!
+        ExpressionKind::Variable(name) => {
+            if let (Some(signature), Some(summary)) = (local_signatures.get(name), local_summaries.get(name)) {
+                return Some((signature.clone(), summary.clone()));
+            }
+            for dependency in dependencies {
+                let Some(table) = symbols.get(dependency) else { continue };
+                if let (Some(SymbolInfo::Task(signature)), Some(summary)) =
+                    (table.contents.get(name), table.monic_returns.get(name))
+                {
+                    return Some((signature.clone(), summary.clone()));
+                }
+            }
+            None
+        }
+        // Oh great, more member access...
+        ExpressionKind::MemberAccess { target, member } => {
+            let Some(expr) = &Compiler::get_from_member_access(target)
+                else { return None;};
+
+            let ExpressionKind::Variable(module) = &expr.kind else { return None; };
+
+            if !dependencies.iter().any(|dependency| dependency == module) {
+                return None;
+            }
+
+            let table = symbols.get(module)?;
+            let SymbolInfo::Task(signature) = table.contents.get(member)? else { return None };
+            Some((signature.clone(), table.monic_returns.get(member)?.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Maps call arguments to parameter positions for return-provenance substitution. The returned
+/// `Vec<Vec<&'a Expression>>` is built like so to represent the different param types. Optional
+/// params may have an empty Vec, whilst Variadic params can have as many arguments passed into
+/// their final Vec as they want.
+///
+/// This mirrors named, positional, and variadic argument binding without emitting bytecode.
+fn bind_monic_arguments<'a>(arguments: &'a [Argument], parameters: &[ParamSignature]) -> Vec<Vec<&'a Expression>> {
+    // Quick calcs for the variadic and fixed counts
+    let variadic = parameters.last().is_some_and(|parameter| parameter.kind == ParameterKind::Variadic);
+    let fixed_count = parameters.len() - usize::from(variadic);
+    // A vector of vectors of expressions. The parent vector has the length of the parameters length
+    let mut bound = vec![Vec::new(); parameters.len()];
+
+    // First we simply push our named arguments as the normal would...
+    for argument in arguments {
+        let Some(name) = &argument.name else { continue };
+        if let Some(index) = parameters[..fixed_count].iter().position(|parameter| parameter.name == name.node) {
+            bound[index].push(&argument.value);
+        }
+    }
+
+    // The rest are of course put into the optionals or the variadics that may exist
+    let mut free = (0..fixed_count).filter(|index| /* Only the unassigned! */ bound[*index].is_empty())
+        .collect::<Vec<_>>().into_iter();
+
+    for argument in arguments.iter().filter(|argument| argument.name.is_none()) {
+        // Now push!
+        if let Some(index) = free.next() {
+            bound[index].push(&argument.value);
+        } else if variadic {
+            bound[parameters.len() - 1].push(&argument.value);
+        }
+    }
+
+    bound
+}
+
+/// Computes monic provenance for an expression while analyzing a task body.
+/// The `local_signatures` and `local_summaries`
+///
+/// Operations that combine or expose their operands retain provenance. A property read
+/// or a call without a direct-return summary represents a derived value and clears it.
+fn monic_origin_in_expression(
+    expression: &Expression,
+    variables: &HashMap<String, MonicOrigin>,
+    local_signatures: &HashMap<String, Vec<ParamSignature>>,
+    local_summaries: &HashMap<String, MonicReturnSummary>,
+    dependencies: &[String],
+    symbols: &HashMap<String, SymbolTable>,
+) -> MonicOrigin {
+    let mut origin = MonicOrigin::default();
+    match &expression.kind {
+        /*
+            Like many processes, this simply just recursively finds a monic origin within an expression
+        */
+        ExpressionKind::Variable(name) => {
+            if let Some(found) = variables.get(name) {
+                origin.merge(found.clone());
+            }
+        }
+        ExpressionKind::Unary { operand, .. } => origin.merge(monic_origin_in_expression(
+            operand, variables, local_signatures, local_summaries, dependencies, symbols,
+        )),
+        ExpressionKind::Binary { left, right, .. }
+        | ExpressionKind::Comparison { left, right, .. }
+        | ExpressionKind::Logical { left, right, .. } => {
+            origin.merge(monic_origin_in_expression(left, variables, local_signatures, local_summaries, dependencies, symbols));
+            origin.merge(monic_origin_in_expression(right, variables, local_signatures, local_summaries, dependencies, symbols));
+        }
+        ExpressionKind::List(items) => {
+            for item in items {
+                origin.merge(monic_origin_in_expression(item, variables, local_signatures, local_summaries, dependencies, symbols));
+            }
+        }
+        ExpressionKind::Dictionary(entries) => {
+            for (key, value) in entries {
+                origin.merge(monic_origin_in_expression(key, variables, local_signatures, local_summaries, dependencies, symbols));
+                origin.merge(monic_origin_in_expression(value, variables, local_signatures, local_summaries, dependencies, symbols));
+            }
+        }
+        ExpressionKind::Index { target, .. } => {
+            origin.merge(monic_origin_in_expression(target, variables, local_signatures, local_summaries, dependencies, symbols));
+        }
+        ExpressionKind::Callable { callee, arguments } => {
+            let shadowed = match &callee.kind {
+                // Simply check check check!
+                ExpressionKind::Variable(name) => variables.contains_key(name),
+                ExpressionKind::MemberAccess { target, .. } => matches!(
+                    // Break down to find the final member
+                    &Compiler::get_from_member_access(target).unwrap_or(Expression::not_real(ExpressionKind::Nil)).kind,
+                    ExpressionKind::Variable(var_name) if variables.contains_key(var_name)
+                ),
+                _ => false,
+            };
+
+            //
+            if !shadowed && let Some((parameters, summary)) = monic_call_summary(
+                callee, local_signatures, local_summaries, dependencies, symbols,
+            ) {
+                origin.always_monic = summary.always_monic;
+                let bound = bind_monic_arguments(arguments, &parameters);
+                for index in summary.forwarded_parameters {
+                    if let Some(values) = bound.get(index) {
+                        for value in values {
+                            // Get all the fowarded params in!
+                            origin.merge(monic_origin_in_expression(
+                                value, variables, local_signatures, local_summaries, dependencies, symbols,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        _ => {}
+    }
+    origin
+}
+
+/// Collects possible monic origins from returns in a task's statements and nested blocks.
+///
+/// Each branch is analyzed with a copy of the current bindings so declarations in one
+/// branch do not leak into another.
+fn monic_return_origin_in_statements(
+    statements: &[Statement],
+    variables: &mut HashMap<String, MonicOrigin>,
+    local_signatures: &HashMap<String, Vec<ParamSignature>>,
+    local_summaries: &HashMap<String, MonicReturnSummary>,
+    dependencies: &[String],
+    symbols: &HashMap<String, SymbolTable>,
+) -> MonicOrigin {
+    let mut returned = MonicOrigin::default();
+    for statement in statements {
+        match &statement.kind {
+            /*
+                Note: This will be a very long, very big list...
+            */
+            StatementKind::Declaration(declaration) => {
+                if declaration.modifiers.lifecycle == Some(Lifecycle::Monic) {
+                    variables.insert(declaration.name.clone(), MonicOrigin { always_monic: true, forwarded_parameters: HashSet::new() });
+                } else {
+                    variables.insert(declaration.name.clone(), MonicOrigin::default());
+                }
+            }
+            StatementKind::Return(Some(expression)) => returned.merge(monic_origin_in_expression(
+                expression, variables, local_signatures, local_summaries, dependencies, symbols,
+            )),
+            StatementKind::If(branch) => {
+                let mut first = variables.clone();
+                returned.merge(monic_return_origin_in_statements(&branch.first.body, &mut first, local_signatures, local_summaries, dependencies, symbols));
+                for conditional in &branch.elifs {
+                    let mut nested = variables.clone();
+                    returned.merge(monic_return_origin_in_statements(&conditional.body, &mut nested, local_signatures, local_summaries, dependencies, symbols));
+                }
+                let mut maybe = variables.clone();
+                returned.merge(monic_return_origin_in_statements(&branch.maybe_block, &mut maybe, local_signatures, local_summaries, dependencies, symbols));
+                let mut otherwise = variables.clone();
+                returned.merge(monic_return_origin_in_statements(&branch.else_block, &mut otherwise, local_signatures, local_summaries, dependencies, symbols));
+            }
+            StatementKind::While(loop_statement) => {
+                let mut nested = variables.clone();
+                returned.merge(monic_return_origin_in_statements(&loop_statement.body, &mut nested, local_signatures, local_summaries, dependencies, symbols));
+            }
+            StatementKind::For(loop_statement) => {
+                let mut nested = variables.clone();
+                // Who knows! Maybe we'll allow monic variables in for loops...
+                if loop_statement.declaration.modifiers.lifecycle == Some(Lifecycle::Monic) {
+                    nested.insert(loop_statement.declaration.name.clone(), MonicOrigin { always_monic: true, forwarded_parameters: HashSet::new() });
+                }
+                returned.merge(monic_return_origin_in_statements(&loop_statement.body, &mut nested, local_signatures, local_summaries, dependencies, symbols));
+            }
+            StatementKind::Foreach(loop_statement) => {
+                let mut nested = variables.clone();
+                // Variable(s) don't specify monomorphism anyway
+                for name in &loop_statement.variables { nested.insert(name.clone(), MonicOrigin::default()); }
+                returned.merge(monic_return_origin_in_statements(&loop_statement.body, &mut nested, local_signatures, local_summaries, dependencies, symbols));
+            }
+            StatementKind::Match(match_statement) => {
+                for case in &match_statement.cases {
+                    let mut nested = variables.clone();
+                    returned.merge(monic_return_origin_in_statements(&case.body, &mut nested, local_signatures, local_summaries, dependencies, symbols));
+                }
+                if let Some(default) = &match_statement.default {
+                    let mut nested = variables.clone();
+                    returned.merge(monic_return_origin_in_statements(default, &mut nested, local_signatures, local_summaries, dependencies, symbols));
+                }
+            }
+
+            _ => {}
+        }
+    }
+    returned
 }
