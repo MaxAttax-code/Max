@@ -11,7 +11,7 @@ pub enum Op {
     Lambda(Arc<LambdaOperand>),
     MemberAccess(MemberAccessOperand),
 
-    DefineObject(ObjectStructure),
+    DefineObject(ObjectLikeStructure),
     Construct(ConstructOperand),
     /// Simply notifies that construction has finished
     FinishConstruct,
@@ -451,9 +451,10 @@ pub enum MemberTask {
 }
 
 /// An Object Structure. It holds names, parameters, the **initialiser entry**,
-/// fields and methods
+/// fields and methods. This is also a Struct's *Structure*
 #[derive(Debug, Clone, PartialEq)]
-pub struct ObjectStructure {
+pub struct ObjectLikeStructure {
+    pub is_struct: bool,
     pub module_name: String,
     pub identifier: String,
     /// Constructor parameters
@@ -515,7 +516,7 @@ pub struct CoroutineInfo {
 pub struct Bytecode {
     pub instructions: Arc<Vec<Op>>,
     pub tasks: Arc<HashMap<String, TaskInfo>>,
-    pub objects: Arc<HashMap<String, ObjectStructure>>,
+    pub objects: Arc<HashMap<String, ObjectLikeStructure>>,
     pub coroutines: Arc<HashMap<String, CoroutineInfo>>,
     pub enums: Arc<HashMap<String, EnumStructure>>
 }
