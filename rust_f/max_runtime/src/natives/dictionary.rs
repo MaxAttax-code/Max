@@ -184,8 +184,8 @@ pub fn dictionary_add(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     }
 
     // They are pushed at the same time
-    dict.keys.push(key.clone());
-    dict.values.push(value.clone());
+    dict.keys.push(key.copy_on_store());
+    dict.values.push(value.copy_on_store());
     drop(dict);
     // Just like lists, we tell the VM this dictionary has been changed
     vm.notify_collection_changed(&args[0]);

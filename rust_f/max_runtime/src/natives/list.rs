@@ -241,7 +241,7 @@ pub fn list_add(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
     }
 
     // Simply push to the list, as it is a Mutable reference, so it automatically changes for us without having to reassign anything!
-    list.items.push(item.clone());
+    list.items.push(item.copy_on_store());
     drop(list);
     // We notify the VM that the collection has changed (for possible values to react to)
     vm.notify_collection_changed(&args[0]);
@@ -267,7 +267,7 @@ pub fn list_add_range(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
             VirtualMachine::ensure_compatibility(element_type, &element);
         }
 
-        list.items.push(element);
+        list.items.push(element.copy_on_store());
     }
 
     drop(list);
@@ -282,14 +282,16 @@ pub fn list_concatenate(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 
     let mut list = list.borrow_mut();
     let appendable = appendable.borrow();
+    // We need this to use `copy_on_store` properly
+    let mut items: Vec<Value> = Vec::new();
 
     if let Some(element_type) = &list.element_type {
         for item in &appendable.items {
             VirtualMachine::ensure_compatibility(element_type, item);
+            items.push(item.copy_on_store());
         }
     }
 
-    let items = appendable.items.clone();
 
     list.items.extend(items);
     drop(appendable);
@@ -306,14 +308,14 @@ pub fn list_combine(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
 
     let mut list = list.borrow_mut();
     let appendable = appendable.borrow();
+    let mut items: Vec<Value> = Vec::new();
 
     if let Some(element_type) = &list.element_type {
         for item in &appendable.items {
             VirtualMachine::ensure_compatibility(element_type, item);
+            items.push(item.copy_on_store());
         }
     }
-
-    let items = appendable.items.clone();
 
     // Difference from concatenate is that it does not allow duplicates!
     for item in items {
@@ -347,7 +349,7 @@ pub fn list_insert(vm: &mut VirtualMachine, args: Vec<Value>) -> Value {
         panic!("List task insert errored: Index given was larger than the lists length")
     }
 
-    list.items.insert(*index as usize, item.clone());
+    list.items.insert(*index as usize, item.copy_on_store());
     drop(list);
 
     vm.notify_collection_changed(&args[0]);
@@ -677,7 +679,7 @@ fn value_to_string_via_seperator(value: &Value, seperator: &str) -> String {
         Value::EnumMember(member) => format!("{}", member.full_name()),
 
         Value::ObjectDefinition(obj_def) => format!("{}", obj_def.identifier),
-        Value::Object(object) => format!("{}", object.borrow().definition.identifier)
+        Value::ObjectLike(object) => format!("{}", object.borrow().definition.identifier)
     };
 
     string
