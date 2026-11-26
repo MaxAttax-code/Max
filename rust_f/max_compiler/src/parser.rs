@@ -1293,18 +1293,29 @@ impl Parser {
         let model_type = self.expect(K::ModelType, Some("Expected a valid model type after 'model'"))?;
         match model_type.value.as_str() {
             "object" => {
-                let object = self.parse_object()?;
+                let object = self.parse_object_like(false)?;
 
-                Ok(ModelDefinition::Object(object))
+                Ok(ModelDefinition::ObjectLike(object))
+            }
+
+            "struct" => {
+                let r#struct = self.parse_object_like(true)?;
+
+                Ok(ModelDefinition::ObjectLike(r#struct))
             }
 
             _ => return Err(model_type.span.error("unsupported-model-type", format!("Model type '{}' is not supported yet", model_type.value)))
         }
     }
 
-    /// Parses right after the model type in a model definition
-    fn parse_object(&mut self) -> Result<ObjectDefinition, MaxDiagnostic> {
-        let name_token = self.expect(K::Identifier, Some("Object models require a name"))?;
+    /// Parses right after the model type in a model definition.
+    /// 
+    /// This works for objects and structs, where the only parsing
+    /// difference is that structs do not allow static properties
+    /// (What `is_struct` is used for along with creating `ObjectLikeDefinition`)
+    fn parse_object_like(&mut self, is_struct: bool) -> Result<ObjectLikeDefinition, MaxDiagnostic> {
+        let to_name = if is_struct { "Struct" } else { "Object" };
+        let name_token = self.expect(K::Identifier, Some(format!("{} models require a name", to_name)))?;
         
         // Same syntax as tasks!
         let parameters: Vec<Parameter> =
@@ -1314,14 +1325,15 @@ impl Parser {
             self.eat(K::With);
             self.parse_parameters()?
         } else {
-            return Err(self.error_here("object-param-syntax-error", "Expected an object name to be followed by '=>' or parameters ('with')"));
+            return Err(self.error_here("object-like-param-syntax-error", format!("Expected an {} name to be followed by '=>' or parameters ('with')", to_name.to_lowercase())));
         };
 
-        let members_span = self.expect(K::Members, Some("Object definition members are started by \"members\""))?.span;
+        let members_span = self.expect(K::Members, Some(format!("{} definition members are started by \"members\"", to_name)))?.span;
 
-        let (members, end_span): (Vec<ModelMember>, Span) = self.parse_object_members()?;
+        let (members, end_span): (Vec<ModelMember>, Span) = self.parse_object_like_members(is_struct)?;
 
-        let object = ObjectDefinition {
+        let object = ObjectLikeDefinition {
+            is_struct,
             name: Spanned { node: name_token.value, span: name_token.span },
             span: members_span.to(end_span),
             parameters,
@@ -1331,25 +1343,28 @@ impl Parser {
         Ok(object)
     }
 
-    /// Parses what's after "members" in an object. This returns both the final
-    /// Vector of `ModelMember`s and the final `Span` at the *conclude*
-    fn parse_object_members(&mut self) -> Result<(Vec<ModelMember>, Span), MaxDiagnostic> {
+    /// Parses what's after "members" in an object *or* struct. This returns both the final
+    /// Vector of `ModelMember`s and the final `Span` at the *conclude*.
+    /// 
+    /// The `is_struct` boolean is passed into `parse_attributes` **inversed**
+    fn parse_object_like_members(&mut self, is_struct: bool) -> Result<(Vec<ModelMember>, Span), MaxDiagnostic> {
+        let to_name = if is_struct { "struct" } else { "object" };
         let mut members: Vec<ModelMember> = Vec::new();
 
         while !self.check(K::ConcludeStatement) {
-            let attributes: Attributes = self.parse_attributes()?;
+            let attributes: Attributes = self.parse_attributes(!is_struct)?;
             let now = self.current_safe()?;
             let model_member: ModelMember = match &now.kind {
                 K::Decl => ModelMember::Field(FieldMember { attributes, declaration: self.parse_declaration()? }),
                 K::Def => ModelMember::Task(TaskMember { attributes, definition: self.parse_definition()? }),
 
-                _ => return Err(now.span.error("invalid-object-member", format!("Cannot create an object member from '{}'", now.value)))
+                _ => return Err(now.span.error("invalid-object-like-member", format!("Cannot create an {} member from '{}'", to_name, now.value)))
             };
 
             members.push(model_member);
         };
 
-        let end_span = self.expect_conclusion("Expected 'conclude' after an object model definition")?.span;
+        let end_span = self.expect_conclusion(format!("Expected 'conclude' after an {} model definition", to_name))?.span;
 
         Ok((members, end_span))
     }
@@ -1363,7 +1378,7 @@ impl Parser {
     /// #[private]
     /// ...
     /// ```
-    fn parse_attributes(&mut self) -> Result<Attributes, MaxDiagnostic> {
+    fn parse_attributes(&mut self, allow_static: bool) -> Result<Attributes, MaxDiagnostic> {
         // Start as default, so if no '#' is found, then fall through anyway
         let mut attributes: Attributes = Attributes { visibility: None, is_static: false };
 
@@ -1387,9 +1402,11 @@ impl Parser {
                         attributes.visibility = Some(Visibility::Protected);
                     } else { return Err(found.span.error("duplicate-visibility", "Visibility attribute is already given")); }
                     
-                    "static" => if !attributes.is_static {
-                        attributes.is_static = true;
-                    } else { return Err(found.span.error("duplicate-static", "Static attribute is already given")); }
+                    "static" => if allow_static {
+                        if !attributes.is_static {
+                            attributes.is_static = true;
+                        } else { return Err(found.span.error("duplicate-static", "Static attribute is already given"));}
+                    } else { return Err(found.span.error("static-not-allowed", "Cannot apply a static attribute for structs")); }
 
                     _ => return Err(found.span.error("unknown-attribute", format!("Unknown attribute given: '{}'", found.value)))
                 }

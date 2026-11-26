@@ -120,7 +120,7 @@ pub enum SymbolInfo {
     Coroutine,
     Event { parameters: Vec<ParamSignature> },
     Enum(Vec<EnumMember>),
-    Object(ObjectSignature),
+    ObjectLike(ObjectLikeSignature),
 }
 
 /**
@@ -179,8 +179,8 @@ impl SymbolTable {
                 }
 
                 StatementKind::Model(model) => match model {
-                    ModelDefinition::Object(object) =>
-                        { contents.insert(object.name.node.clone(), SymbolInfo::Object(ObjectSignature::from_definition(object))); }
+                    ModelDefinition::ObjectLike(object) =>
+                        { contents.insert(object.name.node.clone(), SymbolInfo::ObjectLike(ObjectLikeSignature::from_definition(object))); }
                 },
 
                 _ => {}
@@ -264,7 +264,7 @@ pub struct MemberSignature {
     pub visibility: Visibility
 }
 
-/// Holds the signature of an Object:
+/// Holds the signature of an Object *or* Struct:
 /// - It's `name`
 /// - It's `parameters`
 /// - Any `members` it has as *`MemberSignature`s*
@@ -272,14 +272,14 @@ pub struct MemberSignature {
 /// Signatures allow models and their members to supply
 /// information to dependers
 #[derive(Debug, Clone)]
-pub struct ObjectSignature {
+pub struct ObjectLikeSignature {
     pub name: String,
     pub parameters: Vec<ParamSignature>,
     pub members: Vec<MemberSignature>
 }
 
-impl ObjectSignature {
-    pub fn from_definition(definition: &ObjectDefinition) -> Self {
+impl ObjectLikeSignature {
+    pub fn from_definition(definition: &ObjectLikeDefinition) -> Self {
         let name = definition.name.node.clone();
         // Convert to signatures
         let parameters = definition.parameters.iter().map(
@@ -381,8 +381,8 @@ pub struct Compiler<'a> {
     /// A map of all tasks that can possibly return a monic value (our `MonicReturnSummary`)
     local_monic_returns: HashMap<String, MonicReturnSummary>,
 
-    objects: Arc<HashMap<String, bc::ObjectStructure>>,
-    local_objects: HashMap<String, ObjectSignature>,
+    objects: Arc<HashMap<String, bc::ObjectLikeStructure>>,
+    local_objects: HashMap<String, ObjectLikeSignature>,
 
     model_context: Option<ModelContext>,
 
@@ -489,8 +489,8 @@ impl<'a> Compiler<'a> {
 
                 StatementKind::Model(model) => {
                     match model {
-                        ModelDefinition::Object(object) =>
-                            { self.local_objects.insert(object.name.node.clone(), ObjectSignature::from_definition(object)); }
+                        ModelDefinition::ObjectLike(object) =>
+                            { self.local_objects.insert(object.name.node.clone(), ObjectLikeSignature::from_definition(object)); }
                     }
                 }
 
@@ -772,7 +772,7 @@ impl<'a> Compiler<'a> {
         !self.is_variable_declared(name)
             && (self.enums.contains_key(name)
                 || self.find_enum_members(name).is_some()
-                || self.resolve_object(name).is_some()
+                || self.resolve_object_like(name).is_some()
                 || self.ctx.symbols.contains_key(name))
     }
 
@@ -808,7 +808,7 @@ impl<'a> Compiler<'a> {
                 if self.find_enum_members(name).is_some() {
                     bc::MaxType::EnumType(name.clone())
                 }
-                else if self.resolve_object(name).is_some() {
+                else if self.resolve_object_like(name).is_some() {
                     bc::MaxType::ObjectType(name.clone())
                 }
                 else {
@@ -1047,7 +1047,7 @@ impl<'a> Compiler<'a> {
         }
 
         // 2. Static model accessing
-        if let Some(object) = self.resolve_object_node(target) {
+        if let Some(object) = self.resolve_object_like_node(target) {
             self.check_static_member(&object, member, MemberKind::Field, span)?;
             return Ok(bc::MemberAccessType::StaticObject)
         }
@@ -1813,7 +1813,7 @@ impl<'a> Compiler<'a> {
     /// invocation based on the `callee` given, using `resolve_object_node` to check.
     /// Arguments are passed into whatever will be compiled.
     fn determine_caller(&mut self, callee: &Expression, arguments: &[Argument]) -> Result<(), MaxDiagnostic> {
-        if self.resolve_object_node(callee).is_some() {
+        if self.resolve_object_like_node(callee).is_some() {
             self.compile_object_construction(callee, arguments)
         } else {
             self.compile_task_call(callee, arguments)
@@ -1821,7 +1821,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_object_construction(&mut self, callee: &Expression, arguments: &[Argument]) -> Result<(), MaxDiagnostic> {
-        let Some(object) = self.resolve_object_node(callee) else {
+        let Some(object) = self.resolve_object_like_node(callee) else {
             return Err(error(callee.span, "unknown-object", "Expected an object to construct"));
         };
 
@@ -1850,7 +1850,7 @@ impl<'a> Compiler<'a> {
         if self.local_objects.contains_key(name) { return None; }
         self.dependencies.iter().find(|d| matches!(
             self.ctx.symbols.get(*d).and_then(|t| t.contents.get(name)),
-            Some(SymbolInfo::Object(_))
+            Some(SymbolInfo::ObjectLike(_))
         )).cloned()
     }
 
@@ -1914,7 +1914,7 @@ impl<'a> Compiler<'a> {
             }
 
             // Otherwise, attempt to find if the target is an object!
-            if let Some(object) = self.resolve_object_node(target) {
+            if let Some(object) = self.resolve_object_like_node(target) {
                 // Of course, this must be a task member!
                 self.check_static_member(&object, member, MemberKind::Task, callee.span)?;
             }
@@ -2186,16 +2186,16 @@ impl<'a> Compiler<'a> {
     // ---- MODEL DEFINITIONS ----- //
     // ---------------------------- //
 
-    /// Resolve if an object (local or in dependencies) has the given name,
+    /// Resolve if an object/struct (local or in dependencies) has the given name,
     /// returning it's `ObjectSignature` if so
-    fn resolve_object(&self, name: &str) -> Option<ObjectSignature> {
+    fn resolve_object_like(&self, name: &str) -> Option<ObjectLikeSignature> {
         if let Some(object) = self.local_objects.get(name) {
             return Some(object.clone());
         }        
 
         for dependency in self.dependencies {
             if let Some(table) = self.ctx.symbols.get(dependency)
-                && let Some(SymbolInfo::Object(object)) = table.contents.get(name)
+                && let Some(SymbolInfo::ObjectLike(object)) = table.contents.get(name)
             {
                 return Some(object.clone());
             }
@@ -2204,17 +2204,17 @@ impl<'a> Compiler<'a> {
         None
     }
 
-    /// This resolves an object signature from the given `Expression`. This is
+    /// This resolves an object-like signature from the given `Expression`. This is
     /// not to be confused with `resolve_object`, which this function calls upon
     /// in certain arms.
     /// 
     /// The Expression is matched with:
-    /// - `ExpressionKind::Variable` if no variable of same name => `resolve_object`
+    /// - `ExpressionKind::Variable` if no variable of same name => `resolve_object_like`
     /// - `ExpressionKind::MemberAccess` => check if the TARGET kind is a variable,
-    /// then return the `ObjectSignature` obtained from the it's `SymbolInfo`
-    fn resolve_object_node(&self, expression: &Expression) -> Option<ObjectSignature> {
+    /// then return the `ObjectLikeSignature` obtained from the it's `SymbolInfo`
+    fn resolve_object_like_node(&self, expression: &Expression) -> Option<ObjectLikeSignature> {
         match &expression.kind {
-            ExpressionKind::Variable(name) if !self.is_variable_declared(name) => self.resolve_object(name),
+            ExpressionKind::Variable(name) if !self.is_variable_declared(name) => self.resolve_object_like(name),
 
             ExpressionKind::MemberAccess { target, member } => {
                 // Break it down, Yeah! In reality, objects could never be indexed like:
@@ -2223,7 +2223,7 @@ impl<'a> Compiler<'a> {
                 if let ExpressionKind::Variable(module) = &target.kind
                     && !self.is_variable_declared(module)
                     && let Some(table) = self.ctx.symbols.get(module)
-                    && let Some(SymbolInfo::Object(object)) = table.contents.get(member)
+                    && let Some(SymbolInfo::ObjectLike(object)) = table.contents.get(member)
                 {
                     return Some(object.clone());
                 }
@@ -2235,9 +2235,11 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Checks if a member is a static member of the `ObjectSignature` given. The `kind` is
+    /// Checks if a member is a static member of the `ObjectLikeSignature` given. The `kind` is
     /// used to force the member to one `MemberKind` (returning a diagnostic otherwise).
-    fn check_static_member(&self, object: &ObjectSignature, member: &str, kind: MemberKind, span: Span) -> Result<(), MaxDiagnostic>
+    /// 
+    /// Know this should only be called on objects, as structs have no static members
+    fn check_static_member(&self, object: &ObjectLikeSignature, member: &str, kind: MemberKind, span: Span) -> Result<(), MaxDiagnostic>
     {
         let Some(found) = object.members.iter().find(|m| m.name == member) else {
             return Err(error(span, "unknown-object-member",
@@ -2263,11 +2265,11 @@ impl<'a> Compiler<'a> {
     /// This function only first matches the `ModelDefinition` kind to call the appropriate compiler method
     fn compile_model_definition(&mut self, model: &ModelDefinition) -> Result<(), MaxDiagnostic> {
         match model {
-            ModelDefinition::Object(object) => self.compile_object_definition(object)
+            ModelDefinition::ObjectLike(object) => self.compile_object_definition(object)
         }
     }
         
-    fn compile_object_definition(&mut self, object: &ObjectDefinition) -> Result<(), MaxDiagnostic> {
+    fn compile_object_definition(&mut self, object: &ObjectLikeDefinition) -> Result<(), MaxDiagnostic> {
         let scope_count = self.variable_scopes.len();
         let result = self.compile_object_inner(object);
         // A failed object must not leak its scopes or context into later statements
@@ -2278,7 +2280,7 @@ impl<'a> Compiler<'a> {
 
     /// Works on compiling the inner-fields and methods of an object. This calls
     /// upon other methods specific to models too, such as `compile_function_body`
-    fn compile_object_inner(&mut self, object: &ObjectDefinition) -> Result<(), MaxDiagnostic> {
+    fn compile_object_inner(&mut self, object: &ObjectLikeDefinition) -> Result<(), MaxDiagnostic> {
         if self.has_duplicate_naming(&object.name.node) {
             return Err(error(object.name.span, "duplicate-object",
                 format!("Object name has already been taken elsewhere: '{}'", object.name.node)));
@@ -2309,7 +2311,7 @@ impl<'a> Compiler<'a> {
                         return Err(t.definition.name_span.error("duplicate-object-member",
                             format!("Another object member of the same name is taken: '{}'", t.definition.name)));
                     }
-                    // Functions only, *for now*. This also rejects events and coroutines
+                    // Functions only, *for now*.
                     if t.definition.kind != TaskKind::Function || t.definition.is_native {
                         return Err(t.definition.name_span.error("unsupported-task-member",
                             format!("Task member '{}' is not supported yet", t.definition.name)));
@@ -2384,7 +2386,8 @@ impl<'a> Compiler<'a> {
 
         let parameters = self.convert_parameters(&object.parameters)?;
 
-        let new_object = bc::ObjectStructure {
+        let new_object = bc::ObjectLikeStructure {
+            is_struct: object.is_struct,
             module_name: self.module_name.to_string(),
             identifier: object.name.node.clone(),
             initialiser_entry,
