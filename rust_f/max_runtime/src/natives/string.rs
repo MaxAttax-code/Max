@@ -386,7 +386,7 @@ pub fn format_to_string(val: Value) -> String {
         Value::EnumMember(memb) => format!("{}", memb.full_name()),
 
         Value::ObjectDefinition(obj_def) => format!("{}", obj_def.identifier),
-        Value::Object(object) => format!("{}", object.borrow().definition.identifier),
+        Value::ObjectLike(object) => format!("{}", object.borrow().definition.identifier),
 
         Value::Nil => format!("nil"),
     }
