@@ -308,8 +308,12 @@ pub enum ModelMember {
     Task(TaskMember)
 }
 
+/// This Definition is defined for *both* objects and structs. The
+/// differences between them are either handled during parsing/compiling
+/// or at run-time.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ObjectDefinition {
+pub struct ObjectLikeDefinition {
+    pub is_struct: bool,
     pub name: Spanned<String>,
     /// Span of the entirety of the class, starting from "members"
     pub span: Span,
@@ -320,7 +324,7 @@ pub struct ObjectDefinition {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelDefinition {
-    Object(ObjectDefinition)
+    ObjectLike(ObjectLikeDefinition),
 }
 
 /*
