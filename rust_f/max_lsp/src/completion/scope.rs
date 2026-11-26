@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use max_compiler::lexer::Lexer;
 use max_compiler::parser::Parser;
-use max_compiler::ast::{EnumMember, Expression, ExpressionKind, ModelDefinition, ModelMember, ObjectDefinition, Statement, StatementKind, TypeRef};
+use max_compiler::ast::{EnumMember, Expression, ExpressionKind, ModelDefinition, ModelMember, ObjectLikeDefinition, Statement, StatementKind, TypeRef};
 
 #[derive(Clone)]
 pub enum MemberTy {
@@ -27,7 +27,7 @@ pub struct Symbol {
 /// Represents a map of enums/enum members and their respective (sub-)members
 pub type EnumMembs = HashMap<String, Vec<EnumMember>>;
 /// A map of model names and their definitions
-pub type Objects = HashMap<String, ObjectDefinition>;
+pub type Objects = HashMap<String, ObjectLikeDefinition>;
 
 /// Combines the local fields of a `Scope` into one to prevent parameter
 /// overcrowding in functions
@@ -285,7 +285,7 @@ pub fn build(text: &str, cursor_line: u32) -> Scope {
             StatementKind::Enum(e) => { scope.enums.insert(e.identifier.clone(), e.members.clone()); }
             StatementKind::Model(m) => {
                 match m {
-                    ModelDefinition::Object(obj) => { scope.objects.insert(obj.name.node.clone(), obj.clone()); }
+                    ModelDefinition::ObjectLike(obj) => { scope.objects.insert(obj.name.node.clone(), obj.clone()); }
                 }
             }
 
