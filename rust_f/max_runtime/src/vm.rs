@@ -34,8 +34,8 @@ pub enum Value {
     EnumDefinition(EnumStructure), // Allow standalone and typing
     EnumMember(EnumMember), // An enum member alone
 
-    ObjectDefinition(Arc<ObjectStructure>), // Specific to object definitions
-    Object(ObjectHandle), // An actual Object instance, carrying it's name
+    ObjectDefinition(Arc<ObjectLikeStructure>), // Specific to object definitions (Structs can't have static properties anyways)
+    ObjectLike(ObjectLikeHandle), // An actual Object/Struct instance, carrying it's name
     
     Nil
 }
@@ -179,12 +179,46 @@ impl Default for CoroutineInstance {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ObjectInstance {
-    pub definition: Arc<ObjectStructure>,
+pub struct ObjectLikeInstance {
+    pub definition: Arc<ObjectLikeStructure>,
     pub fields: Arc<HashMap<String, VariableEntry>>
 }
 
-pub type ObjectHandle = Rc<RefCell<ObjectInstance>>;
+impl ObjectLikeInstance {
+    /// Creates a deep copy of this instance. A deep copy only works for structs,
+    /// which `copy_on_store`, whereas objects create a shared reference instead.
+    /// 
+    /// The definition is `Arc::clone`d from the self-definition, whilst all fields
+    /// are rebuilt for the newly returned instance.
+    fn deep_copy(&self) -> ObjectLikeInstance {
+        // Rebuild the cells, as cloning a `VariableEntry` would share them
+        let fields = self.fields.iter().map(|(name, entry)| {
+            let value = entry.value.borrow().copy_on_store();   // nested structs copy, nested objects stay shared
+            (name.clone(), VariableEntry::new(value, entry.modifiers, entry.max_type.clone(), entry.resort_value.clone()))
+        }).collect();
+        ObjectLikeInstance { definition: Arc::clone(&self.definition), fields: Arc::new(fields) }
+    }
+}
+
+pub type ObjectLikeHandle = Rc<RefCell<ObjectLikeInstance>>;
+
+pub trait ObjectLikeHandleEquality {
+    fn eq(&self, other: &Self) -> bool;
+
+    fn ne(&self, other: &Self) -> bool {
+        !self.eq(other)
+    }
+}
+
+impl ObjectLikeHandleEquality for ObjectLikeHandle {
+    fn eq(&self, other: &Self) -> bool {
+        if Rc::ptr_eq(&self, &other) { return true; }
+        let (a, b) = (self.borrow(), other.borrow());
+        a.definition.is_struct && b.definition.is_struct
+            && a.definition.identifier == b.definition.identifier
+            && a.fields == b.fields
+    }
+}
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -233,7 +267,7 @@ impl fmt::Display for Value {
             Value::EnumMember(memb) => write!(f, "{}", memb.full_name()),
 
             Value::ObjectDefinition(obj) => write!(f, "Object {}", obj.identifier),
-            Value::Object(obj_inst) => write!(f, "<{} Instance>", obj_inst.borrow().definition.identifier),
+            Value::ObjectLike(obj_inst) => write!(f, "<{} Instance>", obj_inst.borrow().definition.identifier),
 
             Value::Nil => write!(f, "nil"),
         }
@@ -315,9 +349,9 @@ impl Value {
         })))
     }
 
-    /// Helper function to quicky create a new Object value form the given instance
-    pub fn new_object(handle: ObjectInstance) -> Self {
-        Value::Object(Rc::new(RefCell::new(handle)))
+    /// Helper function to quicky create a new Object-like value form the given instance
+    pub fn new_object_like(handle: ObjectLikeInstance) -> Self {
+        Value::ObjectLike(Rc::new(RefCell::new(handle)))
     }
 
     /// Intakes an `&ConstValue` to read and output a valid `Value`
@@ -407,9 +441,9 @@ impl Value {
             (Value::EnumMember(mem1), Value::EnumMember(mem2)) => Value::Boolean(mem1.is_same_member(mem2)),
 
             (Value::ObjectDefinition(def1), Value::ObjectDefinition(def2)) => Value::Boolean(def1.identifier == def2.identifier),
-            (Value::Object(obj1), Value::Object(obj2)) => Value::Boolean(Rc::as_ptr(obj1) == Rc::as_ptr(obj2)),
-            (Value::ObjectDefinition(def), Value::Object(obj)) => Value::Boolean(def.identifier == obj.borrow().definition.identifier),
-            (Value::Object(obj), Value::ObjectDefinition(def)) => Value::Boolean(def.identifier == obj.borrow().definition.identifier),
+            (Value::ObjectLike(obj1), Value::ObjectLike(obj2)) => Value::Boolean(Rc::as_ptr(obj1) == Rc::as_ptr(obj2)),
+            (Value::ObjectDefinition(def), Value::ObjectLike(obj)) => Value::Boolean(def.identifier == obj.borrow().definition.identifier),
+            (Value::ObjectLike(obj), Value::ObjectDefinition(def)) => Value::Boolean(def.identifier == obj.borrow().definition.identifier),
 
             _ => Value::Boolean(false),
         }
@@ -532,7 +566,7 @@ impl Value {
             Value::EnumMember(memb) => Some(memb.enum_name.clone()),
 
             Value::ObjectDefinition(obj) => Some("ObjectType-".to_string() + &obj.identifier),
-            Value::Object(obj) => Some(obj.borrow().definition.identifier.clone()),
+            Value::ObjectLike(obj) => Some(obj.borrow().definition.identifier.clone()),
 
             Value::Nil => None
         }
@@ -564,7 +598,7 @@ impl Value {
             Value::EnumMember(memb) => MaxType::EnumType(memb.enum_name.clone()),
 
             Value::ObjectDefinition(obj) => MaxType::ObjectType(obj.identifier.clone()),
-            Value::Object(obj) => MaxType::ObjectType(obj.borrow().definition.identifier.clone()),
+            Value::ObjectLike(obj) => MaxType::ObjectType(obj.borrow().definition.identifier.clone()),
 
             Value::Nil => MaxType::NoType
         }
@@ -603,6 +637,18 @@ impl Value {
                     seen_keys.push(key);
                 }
             }
+        }
+    }
+
+    /// Used for wherever a value is stored into a new location.
+    /// 
+    /// E.g. variables, parameters, list slots...
+    pub fn copy_on_store(&self) -> Value {
+        match self {
+            Value::ObjectLike(obj) if obj.borrow().definition.is_struct =>
+                Value::new_object_like(obj.borrow().deep_copy()),
+                // Otherwise meh
+                other => other.clone()
         }
     }
 }
@@ -652,7 +698,7 @@ pub struct VirtualMachine {
     /// which can be found by the name key of the scope entry
     static_scopes: HashMap<String, Arc<HashMap<String, VariableEntry>>>,
     /// A vector of all constructions of an `ObjectStructure`
-    constructions: Vec<Arc<ObjectStructure>>,
+    constructions: Vec<Arc<ObjectLikeStructure>>,
     temporaries: HashMap<u64, Value>,
 
     call_stack: Vec<CallFrame>,
@@ -661,7 +707,7 @@ pub struct VirtualMachine {
     pub active_instructions: Arc<Vec<Op>>,
 
     task_definitions: Arc<HashMap<String, TaskInfo>>,
-    objects: Arc<HashMap<String, ObjectStructure>>,
+    objects: Arc<HashMap<String, ObjectLikeStructure>>,
     modules: Arc<HashMap<String, Bytecode>>,
     /// Name of the current module being run
     module_name: String,
@@ -773,7 +819,7 @@ impl VirtualMachine {
                     for _index in 0..*number as i64 {
                         if let Some(object) = self.stack.pop() {
                             // Insert at the beginning
-                            listables.insert(0, object);
+                            listables.insert(0, object.copy_on_store());
                         }
                     }
 
@@ -798,8 +844,8 @@ impl VirtualMachine {
 
                         // We insert it at the beginning, because AGAIN!
                         // We are taking values from popping the stack, which is in reverse order!
-                        keys_list.insert(0, key);
-                        values_list.insert(0, val);
+                        keys_list.insert(0, key.copy_on_store());
+                        values_list.insert(0, val.copy_on_store());
                     }
 
                     let dictionary = Value::new_dictionary(None, None, None, keys_list, values_list);
@@ -973,15 +1019,15 @@ impl VirtualMachine {
                 }
 
                 Op::Construct(operand) => {
-                    let definition: Arc<ObjectStructure> = match &operand.module {
+                    let definition: Arc<ObjectLikeStructure> = match &operand.module {
                         // A module given
                         Some(module) => {
                             let code = self.modules.get(module).unwrap_or_else(|| panic!("Could not find module '{module}'"));
-                            Arc::new(code.objects.get(&operand.object).unwrap_or_else(|| panic!("No object '{}' in '{module}'", operand.object)).clone())
+                            Arc::new(code.objects.get(&operand.object).unwrap_or_else(|| panic!("No object-like '{}' in '{module}'", operand.object)).clone())
                         }
                         // No module given => this module!
                         None => Arc::new(self.objects.get(&operand.object).cloned()
-                            .unwrap_or_else(|| panic!("Unknown object given to construct: '{}'", operand.object))),
+                            .unwrap_or_else(|| panic!("Unknown object-like given to construct: '{}'", operand.object))),
                     };
                     // The initialiser is a task whose parameters are the construction parameters
                     let task = TaskInfo {
@@ -1003,7 +1049,7 @@ impl VirtualMachine {
                 Op::FinishConstruct => {
                     let definition = self.constructions.pop().expect("FinishConstruct without Construct");
                     let fields = self.scopes.pop().expect("the fields scope");
-                    let instance = Value::new_object(ObjectInstance { definition, fields });
+                    let instance = Value::new_object_like(ObjectLikeInstance { definition, fields });
 
                     self.return_from_task(Some(instance), &mut ip, &mut active_instructions);
                     continue;
@@ -1062,7 +1108,8 @@ impl VirtualMachine {
 
                 // Store a variable within the most local scope concurrently
                 Op::Store(var_info) => {
-                    let mut val = self.stack.pop().unwrap_or(Value::Nil);
+                    // See that `copy_on_store` will be called wherever a value is stored into a new location
+                    let mut val = self.stack.pop().unwrap_or(Value::Nil).copy_on_store();
 
                     // Get resort value if possible without moving the option out of var_info. (aka not stealing the child from it's mother)
                     let resort_value = var_info.resort_value.as_ref();
@@ -1070,7 +1117,7 @@ impl VirtualMachine {
                     // We map the json to get any value within (which for the resortValue would the "Value", look at any json files to see this!)
                     let resort_val: Option<&ConstValue> = resort_value.map(|c| c);
 
-                    if &val == &Value::Nil && let Some(resortable) = resort_val.clone() {
+                    if &val == &Value::Nil && let Some(resortable) = resort_val {
 
                         let val_resortable = Value::from_const(resortable);
 
@@ -1183,7 +1230,7 @@ impl VirtualMachine {
                         // No variable found? Let's check enums and objects now
 
                         let mut found_enums: Option<&EnumStructure> = None;
-                        let mut found_objects: Option<&ObjectStructure> = None;
+                        let mut found_objects: Option<&ObjectLikeStructure> = None;
 
                         for (identifier, enumerator) in self.enums.iter() {
                             if name == identifier {
@@ -1253,7 +1300,7 @@ impl VirtualMachine {
                             // The variations of updating here too
                             let old_value = entry.value.borrow().clone();
                             let updated_value = match var_info.operation {
-                                UpdateOperation::Assign => new_val,
+                                UpdateOperation::Assign => new_val.copy_on_store(),
                                 UpdateOperation::Add => VirtualMachine::add_values(&old_value, &new_val, easy_ip_ref),
                                 UpdateOperation::Subtract => VirtualMachine::subtract_values(&old_value, &new_val, easy_ip_ref),
                                 UpdateOperation::Multiply => VirtualMachine::multiply_values(&old_value, &new_val, easy_ip_ref),
@@ -1311,7 +1358,7 @@ impl VirtualMachine {
                     match (self.stack.pop(), self.stack.pop(), self.stack.pop()) {
                         (Some(value), Some(index), Some(target)) => {
                             let observed_target = target.clone();
-                            let proto_updated_target = VirtualMachine::eval_update_indexing(index, target, value, operand.operation);
+                            let proto_updated_target = VirtualMachine::eval_update_indexing(index, target, value.copy_on_store(), operand.operation);
 
                             if let Ok(updated_target) = proto_updated_target {
                                 // Keep in mind that indexing only applies to collections, so we just run this!
@@ -1378,7 +1425,7 @@ impl VirtualMachine {
                         let proto_current_item = current_item;
 
                         let current_item = match proto_current_item {
-                            Some(v) => v,
+                            Some(v) => v.copy_on_store(),
                             None => return Self::runtime_error(format!("[IP {:04}] Foreach item should exist for an in-range index", ip))
                         };
 
@@ -1388,7 +1435,7 @@ impl VirtualMachine {
                             // Determine the value for this specific variable
                             let val_to_assign = match &current_item {
 
-                                // If the current item is a List/Tuple, extract the matching element index (determined by the for loop!)
+                                // If the current item is a List, extract the matching element index (determined by the for loop!)
                                 Value::List(inner_list) => {
                                     let inner = inner_list.borrow();
                                     inner.items.get(var_idx).cloned().unwrap_or(Value::Nil)
@@ -2224,7 +2271,7 @@ impl VirtualMachine {
     /// The key of a static scope entry is formatted as `definition.module_name`.`definition.identifier`.
     /// The static scope map created for a new definition's scope is filled with new `VariableEntry`s of the
     /// `FieldInfo`s of the objects fields, if they are **static**
-    fn static_scope(&mut self, definition: &ObjectStructure) -> Arc<HashMap<String, VariableEntry>> {
+    fn static_scope(&mut self, definition: &ObjectLikeStructure) -> Arc<HashMap<String, VariableEntry>> {
         let key = format!("{}.{}", definition.module_name, definition.identifier);
         self.static_scopes.entry(key).or_insert_with(|| {
             let mut entries = HashMap::new();
@@ -2268,7 +2315,7 @@ impl VirtualMachine {
             parameters.insert(
                 param.name,
                 VariableEntry::new(
-                    value,
+                    value.copy_on_store(),
                     Modifiers::e_new(),
                     None,
                     None
@@ -2779,7 +2826,7 @@ impl VirtualMachine {
     /// 
     /// The instance can be `None`, where it indicates a static method being called upon using the object
     /// definition.
-    fn invoke_object_method(&mut self, definition: &Arc<ObjectStructure>, instance: Option<ObjectHandle>,
+    fn invoke_object_method(&mut self, definition: &Arc<ObjectLikeStructure>, instance: Option<ObjectLikeHandle>,
                             name: &str, mut args: Vec<Value>, ip: &mut usize, active: &mut Arc<Vec<Op>>)
     {
         // the receiver (Player, or the instance)
@@ -2796,7 +2843,7 @@ impl VirtualMachine {
         let mut extra = vec![self.static_scope(definition)];
         if let Some(handle) = &instance {
             extra.push(Arc::new(HashMap::from([(String::from("this"), VariableEntry::new(
-                Value::Object(Rc::clone(handle)), Modifiers { fixed: true, ..Modifiers::e_new() }, None, None))])));
+                Value::ObjectLike(Rc::clone(handle)), Modifiers { fixed: true, ..Modifiers::e_new() }, None, None))])));
             extra.push(Arc::clone(&handle.borrow().fields));
         }
         let argument_count = args.len() as u64;
@@ -2830,7 +2877,7 @@ impl VirtualMachine {
                     *control_transferred = true;
                     return Value::Nil;
                 }
-                Some(Value::Object(handle)) => {
+                Some(Value::ObjectLike(handle)) => {
                     let handle = Rc::clone(handle);
                     // Fields first (e.g. `player.health`). Fields and tasks share one namespace, so this is unambiguous
                     let field = handle.borrow().fields.get(&call.name).cloned();
@@ -3008,7 +3055,7 @@ impl VirtualMachine {
 
             call_scope.insert(
                 parameter.name.clone(),
-                VariableEntry::new(value, Modifiers::e_new(), None, None),
+                VariableEntry::new(value.copy_on_store(), Modifiers::e_new(), None, None),
             );
         }
 
